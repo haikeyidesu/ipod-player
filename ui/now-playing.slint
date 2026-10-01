@@ -1,0 +1,230 @@
+export component NowPlayingPanel inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <string> queue-label;
+    in property <bool> scrubbing;
+    in property <bool> can-seek;
+    callback scrub-begin(float);
+    callback scrub-move(float);
+    callback scrub-end();
+    callback scrub-abort();
+    property <bool> dragging: false;
+    changed scrubbing => { if !root.scrubbing { root.dragging = false; } }
+    in property <image> artwork;
+    in property <bool> has-art;
+    in property <string> title;
+    in property <string> artist;
+    in property <string> album;
+    in property <float> elapsed;
+    in property <float> duration;
+    in property <string> elapsed-label;
+    in property <string> remaining-label;
+    background: transparent;
+    clip: true;
+
+    VerticalLayout {
+        padding: 0px;
+        padding-bottom: 8px * root.ui-scale;
+        spacing: 0px;
+
+        Text {
+            height: 20px * root.ui-scale;
+            text: root.queue-label;
+            font-size: 14px * root.ui-scale;
+            color: #34485b;
+            overflow: elide; wrap: no-wrap;
+            vertical-alignment: top;
+        }
+        Rectangle { height: 4px * root.ui-scale; background: transparent; }
+
+        HorizontalLayout {
+            height: 110px * root.ui-scale;
+            spacing: 12px * root.ui-scale;
+            padding: 0px;
+
+            // Fixed image slot, with no frame or backing rectangle.
+            Rectangle {
+                width: 110px * root.ui-scale;
+                height: 110px * root.ui-scale;
+                background: transparent;
+                clip: true;
+                if root.has-art: Image {
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                    source: root.artwork;
+                    image-fit: cover;
+                }
+                if !root.has-art: Text {
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                    text: "";
+                    font-family: "Symbols Nerd Font Mono";
+                    font-weight: 400;
+                    font-size: 40px * root.ui-scale;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: #70899d;
+                }
+            }
+
+            // A separate clipped column owns all text. The labels cannot impose
+            // their intrinsic widths on the row or expand into the artwork.
+            Rectangle {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                height: 110px * root.ui-scale;
+                background: transparent;
+                clip: true;
+                VerticalLayout {
+                    padding: 0px;
+                    spacing: 6px * root.ui-scale;
+                    alignment: start;
+                    Rectangle {
+                        height: 24px * root.ui-scale;
+                        background: transparent;
+                        clip: true;
+                        Text {
+                            x: 0px; y: 0px;
+                            width: parent.width; height: parent.height;
+                            text: root.title == "" ? "No music loaded" : root.title;
+                            font-size: 18px * root.ui-scale;
+                            color: #202932;
+                            wrap: no-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        height: 22px * root.ui-scale;
+                        background: transparent;
+                        clip: true;
+                        Text {
+                            x: 0px; y: 0px;
+                            width: parent.width; height: parent.height;
+                            text: root.artist;
+                            font-size: 16px * root.ui-scale;
+                            color: #34485b;
+                            wrap: no-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        // Two lines at the existing 15px album font size.
+                        height: 40px * root.ui-scale;
+                        background: transparent;
+                        clip: true;
+                        Text {
+                            x: 0px; y: 0px;
+                            width: parent.width; height: parent.height;
+                            text: root.album;
+                            font-size: 15px * root.ui-scale;
+                            color: #526775;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            vertical-alignment: top;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Flexible separation keeps the progress region near the bottom, without
+        // depending on any metadata label's length or font metrics.
+        Rectangle {
+            min-height: 8px * root.ui-scale;
+            vertical-stretch: 1;
+            background: transparent;
+        }
+        // Thin visual track, with a larger invisible mouse hit area.
+        Rectangle {
+            height: 24px * root.ui-scale;
+            background: transparent;
+            track := Rectangle {
+                x: 0px; y: 5px * root.ui-scale;
+                width: parent.width; height: 14px * root.ui-scale;
+                background: @linear-gradient(180deg, #aabcc9 0%, #e1eaf0 50%, #edf3f7 100%);
+                border-width: 1px * root.ui-scale;
+                border-color: #768f9f;
+                Rectangle {
+                    x: 1px * root.ui-scale; y: 1px * root.ui-scale;
+                    width: parent.width - 2px * root.ui-scale; height: 1px * root.ui-scale;
+                    background: #5b728344;
+                }
+                Rectangle {
+                    x: 1px * root.ui-scale; y: parent.height - 2px * root.ui-scale;
+                    width: parent.width - 2px * root.ui-scale; height: 1px * root.ui-scale;
+                    background: #ffffffb0;
+                }
+                fill := Rectangle {
+                    x: 2px * root.ui-scale; y: 2px * root.ui-scale;
+                    height: parent.height - 4px * root.ui-scale;
+                    width: (parent.width - 4px * root.ui-scale) * (root.duration > 0 ? max(0, min(1, root.elapsed / root.duration)) : 0);
+                    background: root.scrubbing
+                        ? @linear-gradient(180deg, #b5efff 0%, #51c7fa 30%, #259edd 58%, #1671b5 100%)
+                        : @linear-gradient(180deg, #89dcfa 0%, #32b4eb 30%, #188bcb 58%, #115b9c 100%);
+                    clip: true;
+                    for stripe in 64: Rectangle {
+                        x: stripe * 5px * root.ui-scale;
+                        width: 1px * root.ui-scale; height: parent.height;
+                        background: #124e7a22;
+                    }
+                }
+                if root.scrubbing: Rectangle {
+                    x: 2px * root.ui-scale + (parent.width - 6px * root.ui-scale)
+                        * (root.duration > 0 ? max(0, min(1, root.elapsed / root.duration)) : 0);
+                    y: 1px * root.ui-scale;
+                    width: 2px * root.ui-scale; height: parent.height - 2px * root.ui-scale;
+                    background: #e3f8ff;
+                }
+            }
+            touch := TouchArea {
+                enabled: root.can-seek;
+                function fraction() -> float {
+                    return max(0, min(1, (self.mouse-x - 2px * root.ui-scale) / max(1px, self.width - 4px * root.ui-scale)));
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.cancel {
+                        root.dragging = false;
+                        root.scrub-abort();
+                    } else if event.button == PointerEventButton.left {
+                        if event.kind == PointerEventKind.down {
+                            root.dragging = true;
+                            root.scrub-begin(self.fraction());
+                        } else if event.kind == PointerEventKind.up && root.dragging {
+                            root.dragging = false;
+                            root.scrub-move(self.fraction());
+                            root.scrub-end();
+                        }
+                    }
+                }
+                moved => {
+                    if self.pressed && root.dragging && root.scrubbing { root.scrub-move(self.fraction()); }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 22px * root.ui-scale;
+            spacing: 8px * root.ui-scale;
+            Text {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                text: root.elapsed-label;
+                font-size: 16px * root.ui-scale;
+                color: #34485b;
+                wrap: no-wrap;
+                overflow: elide;
+                horizontal-alignment: left;
+            }
+            Text {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                text: root.remaining-label;
+                font-size: 16px * root.ui-scale;
+                color: #34485b;
+                wrap: no-wrap;
+                overflow: elide;
+                horizontal-alignment: right;
+            }
+        }
+    }
+}

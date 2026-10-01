@@ -1,0 +1,183 @@
+// One input surface avoids competing button and scroll hit areas.
+// Navigation: Use j/k or arrows to select menu items
+// Click wheel sections:
+//   MENU (top) - press to go back to menu
+//   |◀ (left) - press to previous track
+//   ▶| (right) - press to next track  
+//   ▶Ⅱ (bottom) - press to play/pause
+// Scroll: Drag anywhere on the wheel to scroll through lists
+export component ClickWheel inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <bool> menu-pressed;
+    in property <bool> prev-pressed;
+    in property <bool> next-pressed;
+    in property <bool> play-pressed;
+    in property <bool> center-pressed;
+    callback select-item();
+    callback go-back();
+    callback scroll-step(int);
+    callback scroll-start();
+    callback scroll-finish(bool);
+    callback transport(string);
+
+    // Parts: top=0, left=1, right=2, bottom=3, center=4, outside=-1.
+    property <int> active-part: -1;
+    property <bool> scrolling: false;
+    property <angle> last-angle;
+    property <angle> accumulated: 0deg;
+    property <bool> angle-valid: false;
+
+    function part-at(x: length, y: length) -> int {
+        let dx = (x - root.width / 2) / root.ui-scale / 1px;
+        let dy = (y - root.height / 2) / root.ui-scale / 1px;
+        let distance = dx * dx + dy * dy;
+        if distance > 115 * 115 { return -1; }
+        if distance <= 38 * 38 { return 4; }
+        if abs(dy) >= abs(dx) { return dy < 0 ? 0 : 3; }
+        return dx < 0 ? 1 : 2;
+    }
+    function is-down(part: int) -> bool {
+        let mouse = touch.pressed && !root.scrolling && root.active-part == part
+            && root.part-at(touch.mouse-x, touch.mouse-y) == part;
+        return mouse || (part == 0 ? root.menu-pressed : part == 1 ? root.prev-pressed
+            : part == 2 ? root.next-pressed : part == 3 ? root.play-pressed : root.center-pressed);
+    }
+    function activate(part: int) {
+        if part == 0 { root.go-back(); }
+        else if part == 1 { root.transport("previous"); }
+        else if part == 2 { root.transport("next"); }
+        else if part == 3 { root.transport("play-pause"); }
+        else if part == 4 { root.select-item(); }
+    }
+
+    background: @linear-gradient(155deg, #e9ebed 0%, #d8dade 48%, #c5cad0 100%);
+    border-radius: self.width / 2;
+    border-width: 1px * root.ui-scale;
+    border-color: #aeb6bf;
+    clip: true;
+
+    // Soft top reflection and shaded inner rim; subtler than the glossy shell.
+    Rectangle {
+        x: 3px * root.ui-scale;
+        y: 3px * root.ui-scale;
+        width: parent.width - 6px * root.ui-scale;
+        height: self.width;
+        border-radius: self.width / 2;
+        border-width: 2px * root.ui-scale;
+        border-color: @linear-gradient(145deg, #ffffff8c 0%, #ffffff16 48%, #65717e4b 100%);
+        background: @linear-gradient(180deg, #ffffff32 0%, #ffffff08 28%, #45515c00 59%, #45515c17 100%);
+    }
+
+    // A radial wash centered just beyond each rim fades inward and sideways.
+    // Unlike quarter-wedges, it has no straight seams inside the wheel. The
+    // existing gesture logic hides it as soon as the user starts scrolling.
+    for part in [0, 1, 2, 3]: Rectangle {
+        x: (part == 1 ? -115 : part == 2 ? 145 : 15) * 1px * root.ui-scale;
+        y: (part == 0 ? -115 : part == 3 ? 145 : 15) * 1px * root.ui-scale;
+        width: 200px * root.ui-scale;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle,
+            #aab5c0a0 0%, #aeb8c37a 35%, #bdc5ce36 65%, #d8dade00 100%);
+        opacity: root.is-down(part) ? 1 : 0;
+        animate opacity { duration: 70ms; }
+    }
+    Text {
+        x: (parent.width - 64px * root.ui-scale) / 2;
+        y: 14px * root.ui-scale;
+        width: 64px * root.ui-scale; height: 28px * root.ui-scale;
+        text: "MENU"; font-size: 14px * root.ui-scale;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: #636a73;
+    }
+    Text {
+        x: 8px * root.ui-scale; y: (parent.height - 32px * root.ui-scale) / 2;
+        width: 48px * root.ui-scale; height: 32px * root.ui-scale;
+        text: "|◀"; font-size: 17px * root.ui-scale;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: #636a73;
+    }
+    Text {
+        x: parent.width - 56px * root.ui-scale; y: (parent.height - 32px * root.ui-scale) / 2;
+        width: 48px * root.ui-scale; height: 32px * root.ui-scale;
+        text: "▶|"; font-size: 17px * root.ui-scale;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: #636a73;
+    }
+    Text {
+        x: (parent.width - 64px * root.ui-scale) / 2; y: parent.height - 44px * root.ui-scale;
+        width: 64px * root.ui-scale; height: 28px * root.ui-scale;
+        text: "▶Ⅱ"; font-size: 17px * root.ui-scale;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: #636a73;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        width: 76px * root.ui-scale; height: self.width;
+        border-radius: self.width / 2;
+        border-width: 1px * root.ui-scale; border-color: #aeb5bd;
+        background: root.is-down(4)
+            ? @linear-gradient(180deg, #b4bcc5 0%, #c6cbd0 100%)
+            : @linear-gradient(160deg, #ffffff 0%, #f1f2f3 49%, #dbe0e4 100%);
+        animate background { duration: 70ms; }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.cancel {
+                root.scroll-finish(true);
+                root.active-part = -1;
+                root.scrolling = false;
+                root.angle-valid = false;
+            } else if event.button == PointerEventButton.left {
+                if event.kind == PointerEventKind.down {
+                    root.active-part = root.part-at(self.mouse-x, self.mouse-y);
+                    root.scrolling = false;
+                    root.accumulated = 0deg;
+                    root.angle-valid = root.active-part >= 0 && root.active-part < 4;
+                    if root.angle-valid { root.scroll-start(); }
+                    root.last-angle = Math.atan2((self.mouse-y - self.height / 2) / 1px,
+                                                (self.mouse-x - self.width / 2) / 1px);
+                } else if event.kind == PointerEventKind.up {
+                    let part = root.active-part;
+                    let click = !root.scrolling && root.part-at(self.mouse-x, self.mouse-y) == part;
+                    root.active-part = -1;
+                    root.angle-valid = false;
+                    if part >= 0 && part < 4 { root.scroll-finish(false); }
+                    if click { root.activate(part); }
+                }
+            }
+        }
+        moved => {
+            if !self.pressed || root.active-part < 0 { return; }
+            let part = root.part-at(self.mouse-x, self.mouse-y);
+            if root.active-part == 4 {
+                // Moving off the center cancels its click, rather than starting a scroll.
+                if part != 4 { root.scrolling = true; }
+                return;
+            }
+            if part < 0 || part == 4 {
+                root.angle-valid = false;
+                root.scrolling = true;
+                return;
+            }
+            let angle = Math.atan2((self.mouse-y - self.height / 2) / 1px,
+                                   (self.mouse-x - self.width / 2) / 1px);
+            if root.angle-valid {
+                let raw = angle - root.last-angle;
+                // Unwrap the -180/180 degree seam, so crossing it doesn't jump.
+                let delta = raw > 180deg ? raw - 360deg : raw < -180deg ? raw + 360deg : raw;
+                root.accumulated += delta;
+                if abs(root.accumulated) >= 6deg { root.scrolling = true; }
+                let steps = floor(abs(root.accumulated) / 18deg);
+                if steps > 0 {
+                    let direction = root.accumulated > 0deg ? 1 : -1;
+                    root.scroll-step(steps * direction);
+                    root.accumulated -= steps * direction * 18deg;
+                }
+            }
+            root.last-angle = angle;
+            root.angle-valid = true;
+        }
+    }
+}

@@ -1,0 +1,132 @@
+import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Regular.ttf";
+import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Medium.ttf";
+import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-SemiBold.ttf";
+import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Bold.ttf";
+import "../assets/fonts/Symbols_Nerd_Font_Mono/SymbolsNerdFontMono-Regular.ttf";
+
+export component AppWindow inherits Window {
+    width: 360px;
+    height: 540px;
+    background: #1c1c1c;
+
+    default-font-family: "IBM Plex Sans Condensed";
+
+    in-out property <bool> playing: false;
+
+    callback previous();
+    callback play-pause();
+    callback next();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        Rectangle {
+            height: 260px;
+            border-radius: 20px;
+            background: #2a2a2a;
+
+            Text {
+                text: "";
+                font-size: 96px;
+                font-family: "Symbols Nerd Font Mono";
+                color: #dddddd;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            height: 32px;
+            text: "joy.";
+            font-size: 24px;
+            color: white;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            height: 24px;
+            text: "for KING & COUNTRY";
+            font-size: 16px;
+            color: #aaaaaa;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            height: 4px;
+            border-radius: 2px;
+            background: #555555;
+        }
+
+        HorizontalLayout {
+            height: 52px;
+            spacing: 32px;
+            alignment: center;
+
+            Rectangle {
+                width: 52px;
+                height: 52px;
+                background: transparent;
+
+                Text {
+                    text: "󰒮";
+                    font-size: 30px;
+                    font-family: "Symbols Nerd Font Mono";
+                    color: white;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.previous();
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 52px;
+                height: 52px;
+                background: transparent;
+
+                Text {
+                    text: root.playing ? "" : "";
+                    font-size: 56px;
+                    font-family: "Symbols Nerd Font Mono";
+                    color: white;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.play-pause();
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 52px;
+                height: 52px;
+                background: transparent;
+
+                Text {
+                    text: "󰒭";
+                    font-size: 30px;
+                    font-family: "Symbols Nerd Font Mono";
+                    color: white;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.next();
+                    }
+                }
+            }
+        }
+    }
+}

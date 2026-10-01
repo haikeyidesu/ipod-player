@@ -1,0 +1,771 @@
+import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Bold.ttf";
+import "../assets/fonts/Symbols_Nerd_Font_Mono/SymbolsNerdFontMono-Regular.ttf";
+import { ClickWheel } from "click-wheel.slint";
+import { NowPlayingPanel } from "now-playing.slint";
+
+// The display owns its menu selection; it does not know about the wheel yet.
+component DisplayPanel inherits Rectangle {
+    in property <string> queue-label;
+    in property <bool> scrubbing;
+    in property <bool> can-seek;
+    callback scrub-begin(float);
+    callback scrub-move(float);
+    callback scrub-end();
+    callback scrub-abort();
+    in property <image> player-art;
+    in property <bool> player-has-art;
+    in property <float> player-elapsed;
+    in property <float> player-duration;
+    in property <string> player-elapsed-label;
+    in property <string> player-remaining-label;
+    in property <[bool]> browser-songs;
+    in-out property <int> selected-index: 0;
+    in property <int> battery-level: -1;
+    in property <bool> battery-charging: false;
+    in property <float> ui-scale: 1;
+    in property <[string]> menu-items;
+    in property <[string]> browser-items;
+    in property <[bool]> browser-leaves;
+    in property <[bool]> browser-shuffles;
+    in property <[int]> browser-queue-positions;
+    in property <int> player-queue-position;
+    in property <bool> browse-active;
+    in property <string> browse-message;
+    in property <string> page-title;
+    in property <string> player-title;
+    in property <string> player-artist;
+    in property <string> player-album;
+    in property <bool> player-playing;
+    in property <bool> player-paused;
+    callback request-navigation-focus();
+
+    background: @linear-gradient(145deg, #5d646d 0%, #282e35 18%, #292e34 75%, #676f78 100%);
+    border-radius: 10px * root.ui-scale;
+    border-width: 1px * root.ui-scale;
+    border-color: #858b90;
+
+    Rectangle {
+        x: 7px * root.ui-scale;
+        y: 7px * root.ui-scale;
+        width: parent.width - 14px * root.ui-scale;
+        height: parent.height - 14px * root.ui-scale;
+        background: @linear-gradient(180deg, #f9fcfe 0%, #f2f7fa 62%, #e6eef4 100%);
+        border-radius: 4px * root.ui-scale;
+        clip: true;
+
+        header := Rectangle {
+            // Explicitly anchor the fixed-height header above the menu rows.
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 34px * root.ui-scale;
+            background: @linear-gradient(180deg,
+                #f9fdff 0%, #e8f4fa 16%, #dceaf4 52%, #bdd4e3 100%);
+
+            Rectangle {
+                width: parent.width;
+                height: 6px * root.ui-scale;
+                background: @linear-gradient(180deg, #ffffff8a 0%, #ffffff00 100%);
+            }
+            Rectangle {
+                y: parent.height - 2px * root.ui-scale;
+                width: parent.width;
+                height: 2px * root.ui-scale;
+                background: @linear-gradient(180deg, #738fa944 0%, #52738b70 100%);
+            }
+
+            Text {
+                text: root.page-title == "" ? "iPod" : root.page-title;
+                x: 52px * root.ui-scale;
+                width: parent.width - 104px * root.ui-scale;
+                overflow: elide;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 20px * root.ui-scale;
+                color: #202932;
+            }
+            // MPD status, without shifting the centered page title.
+            Text {
+                x: 8px * root.ui-scale;
+                width: 21px * root.ui-scale;
+                height: parent.height;
+                text: root.player-playing ? "▶" : root.player-paused ? "Ⅱ" : "";
+                font-size: 12px * root.ui-scale;
+                color: #34485b;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            // Rust supplies the battery reading; -1 means unknown/no battery.
+            Text {
+                x: parent.width - 52px * root.ui-scale;
+                width: 12px * root.ui-scale;
+                height: parent.height;
+                text: root.battery-charging ? "+" : "";
+                font-size: 16px * root.ui-scale;
+                color: #28753a;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                x: parent.width - 36px * root.ui-scale;
+                y: 11px * root.ui-scale;
+                width: 22px * root.ui-scale;
+                height: 12px * root.ui-scale;
+                border-width: 1px * root.ui-scale;
+                border-color: #35454a;
+                background: transparent;
+                Rectangle {
+                    x: 2px * root.ui-scale;
+                    y: 2px * root.ui-scale;
+                    width: 18px * root.ui-scale * max(0, min(100, root.battery-level)) / 100;
+                    height: 8px * root.ui-scale;
+                    background: root.battery-level <= 20 ? #c74438 : #45a659;
+                }
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.battery-level < 0 ? "?" : "";
+                    font-size: 10px * root.ui-scale;
+                    color: #35454a;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 13px * root.ui-scale;
+                y: 14px * root.ui-scale;
+                width: 2px * root.ui-scale;
+                height: 6px * root.ui-scale;
+                background: #35454a;
+            }
+        }
+
+        // One template for all six compact rows.
+        if root.page-title == "" || root.browse-active: VerticalLayout {
+            x: 0px;
+            y: header.y + header.height;
+            width: parent.width;
+            spacing: 0px;
+
+            for label[index] in root.browse-active ? root.browser-items : root.menu-items: Rectangle {
+                height: 34px * root.ui-scale;
+                background: root.selected-index == index
+                    ? @linear-gradient(180deg, #358dd7 0%, #217bc6 53%, #145da5 100%)
+                    : Math.mod(index, 2) == 0 ? #f0f5f8 : #edf3f6;
+
+                // One continuous Aqua fill: no white top-edge overlay/seam.
+                Rectangle {
+                    y: parent.height - 1px * root.ui-scale;
+                    width: parent.width;
+                    height: 1px * root.ui-scale;
+                    background: root.selected-index == index ? #0e498b75 : #849baa25;
+                }
+
+                Text {
+                    x: (root.browse-active && root.browser-queue-positions[index] >= 0 ? 28px : 12px) * root.ui-scale;
+                    width: parent.width - self.x - 38px * root.ui-scale;
+                    height: parent.height;
+                    text: label;
+                    wrap: no-wrap;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    font-size: 18px * root.ui-scale;
+                    // Selection changes colors only; all rows inherit the bold font.
+                    color: root.selected-index == index ? white : #202932;
+                }
+
+                Text {
+                    x: 9px * root.ui-scale;
+                    width: 14px * root.ui-scale;
+                    height: parent.height;
+                    text: root.browse-active && root.browser-queue-positions[index] >= 0
+                        && root.browser-queue-positions[index] == root.player-queue-position ? "●" : "";
+                    vertical-alignment: center;
+                    font-size: 12px * root.ui-scale;
+                    color: root.selected-index == index ? white : #28753a;
+                }
+                Text {
+                    x: parent.width - 26px * root.ui-scale;
+                    width: 16px * root.ui-scale;
+                    height: parent.height;
+                    text: root.browse-active && root.browser-leaves[index]
+                        ? (root.browser-shuffles[index] ? "" : root.browser-songs[index] ? "" : "") : "›";
+                    font-family: root.browse-active && root.browser-leaves[index] ? "Symbols Nerd Font Mono" : "IBM Plex Sans Condensed";
+                    font-weight: root.browse-active && root.browser-leaves[index] ? 400 : 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-size: (root.browse-active && root.browser-leaves[index] ? 16px : 24px) * root.ui-scale;
+                    color: root.selected-index == index ? white : #606b74;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.selected-index = index;
+                        root.request-navigation-focus();
+                    }
+                }
+            }
+        }
+    }
+    if root.page-title == "Now Playing" && !root.browse-active: NowPlayingPanel {
+        queue-label: root.queue-label; scrubbing: root.scrubbing; can-seek: root.can-seek;
+        scrub-begin(fraction) => { root.scrub-begin(fraction); }
+        scrub-move(fraction) => { root.scrub-move(fraction); }
+        scrub-end => { root.scrub-end(); }
+        scrub-abort => { root.scrub-abort(); }
+        x: 19px * root.ui-scale; y: 61px * root.ui-scale;
+        width: parent.width - 38px * root.ui-scale;
+        height: 208px * root.ui-scale;
+        ui-scale: root.ui-scale;
+        artwork: root.player-art; has-art: root.player-has-art;
+        title: root.player-title; artist: root.player-artist; album: root.player-album;
+        elapsed: root.player-elapsed; duration: root.player-duration;
+        elapsed-label: root.player-elapsed-label; remaining-label: root.player-remaining-label;
+    }
+    if root.browse-active && root.browser-items.length == 0: Text {
+        x: 19px * root.ui-scale;
+        y: 65px * root.ui-scale;
+        width: parent.width - 38px * root.ui-scale;
+        height: 130px * root.ui-scale;
+        text: root.browse-message;
+        font-size: 16px * root.ui-scale;
+        color: #606b74;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    // Passive glass pane over *all* LCD content, including Now Playing text.
+    // Kept very translucent so the row labels and blue selection remain legible.
+    Rectangle {
+        x: 7px * root.ui-scale;
+        y: 7px * root.ui-scale;
+        width: parent.width - 14px * root.ui-scale;
+        height: parent.height - 14px * root.ui-scale;
+        border-radius: 4px * root.ui-scale;
+        clip: true;
+        background: @linear-gradient(180deg, #ffffff0b 0%, #ffffff04 35%, #23364204 68%, #15293612 100%);
+
+        // Broad diagonal sheen and upper-left glow, both fading completely
+        // before their edges; no cut-out shape over the menu text.
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: @linear-gradient(150deg,
+                #ffffff1b 0%, #ffffff11 24%, #ffffff06 49%, #ffffff00 78%);
+        }
+        Rectangle {
+            x: -115px * root.ui-scale;
+            y: -130px * root.ui-scale;
+            width: 410px * root.ui-scale;
+            height: 370px * root.ui-scale;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, #ffffff1c 0%, #ffffff0a 38%, #ffffff00 100%);
+        }
+        Rectangle {
+            width: parent.width;
+            height: 9px * root.ui-scale;
+            background: @linear-gradient(180deg, #ffffff29 0%, #ffffff00 100%);
+        }
+        // LCD recess below the header and a faint opposite-side glass falloff.
+        Rectangle {
+            y: 34px * root.ui-scale;
+            width: parent.width;
+            height: 5px * root.ui-scale;
+            background: @linear-gradient(180deg, #536f8223 0%, #536f8200 100%);
+        }
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: @linear-gradient(90deg, #23364200 0%, #23364200 67%, #2336420b 100%);
+        }
+        Rectangle {
+            x: 1px * root.ui-scale;
+            y: 1px * root.ui-scale;
+            width: parent.width - 2px * root.ui-scale;
+            height: parent.height - 2px * root.ui-scale;
+            border-radius: 3px * root.ui-scale;
+            border-width: 1px * root.ui-scale;
+            border-color: #7993a020;
+            background: transparent;
+        }
+    }
+    // A narrow glass catchlight just inside the darker screen bezel.
+    Rectangle {
+        x: 2px * root.ui-scale;
+        y: 2px * root.ui-scale;
+        width: parent.width - 4px * root.ui-scale;
+        height: parent.height - 4px * root.ui-scale;
+        border-radius: 8px * root.ui-scale;
+        border-width: 1px * root.ui-scale;
+        border-color: @linear-gradient(140deg, #ffffff76 0%, #a9bac529 58%, #ffffff18 100%);
+        background: transparent;
+    }
+}
+
+// The body arranges the screen above the wheel, with room for later materials/shadows.
+component DeviceShell inherits Rectangle {
+    in property <string> queue-label;
+    in property <bool> scrubbing;
+    in property <bool> can-seek;
+    callback scrub-begin(float);
+    callback scrub-move(float);
+    callback scrub-end();
+    callback scrub-abort();
+    in property <image> player-art;
+    in property <bool> player-has-art;
+    in property <float> player-elapsed;
+    in property <float> player-duration;
+    in property <string> player-elapsed-label;
+    in property <string> player-remaining-label;
+    in property <[bool]> browser-songs;
+    in-out property <int> selected-index: 0;
+    in property <[string]> menu-items;
+    in property <[string]> browser-items;
+    in property <[bool]> browser-leaves;
+    in property <[bool]> browser-shuffles;
+    in property <[int]> browser-queue-positions;
+    in property <int> player-queue-position;
+    in property <bool> browse-active;
+    in property <string> browse-message;
+    in property <string> page-title;
+    in property <string> player-title;
+    in property <string> player-artist;
+    in property <string> player-album;
+    in property <bool> player-playing;
+    in property <bool> player-paused;
+    callback request-navigation-focus();
+    callback select-item();
+    callback go-back();
+    callback scroll-step(int);
+    callback scroll-start();
+    callback scroll-finish(bool);
+    callback transport(string);
+    in property <int> battery-level: -1;
+    in property <bool> battery-charging: false;
+    in property <float> ui-scale: 1;
+    in property <bool> menu-pressed: false;
+    in property <bool> prev-pressed: false;
+    in property <bool> next-pressed: false;
+    in property <bool> play-pressed: false;
+    in property <bool> center-pressed: false;
+
+    background: @linear-gradient(108deg,
+        #bec8d0 0%, #eaf0f4 5%, #f8fafb 14%, #eff3f5 30%,
+        #e9ebed 53%, #dce2e7 75%, #cad2da 91%, #b9c2cb 100%);
+    border-radius: 32px * root.ui-scale;
+    border-width: 4px * root.ui-scale;
+    border-color: #aeb4ba;
+
+    // The inset rim follows the rounded corners; broad body highlights live in
+    // the shell gradient rather than in separate, sharp-ended side stripes.
+    Rectangle {
+        x: 5px * root.ui-scale;
+        y: 5px * root.ui-scale;
+        width: parent.width - 10px * root.ui-scale;
+        height: parent.height - 10px * root.ui-scale;
+        border-radius: 28px * root.ui-scale;
+        border-width: 2px * root.ui-scale;
+        border-color: @linear-gradient(145deg,
+            #ffffff88 0%, #ffffff38 28%, #8796a41e 68%, #5262723b 100%);
+        background: transparent;
+    }
+    // The darker opposite edge is carried by the broad shell gradient.
+
+    display := DisplayPanel {
+        queue-label: root.queue-label; scrubbing: root.scrubbing; can-seek: root.can-seek;
+        scrub-begin(fraction) => { root.request-navigation-focus(); root.scrub-begin(fraction); }
+        scrub-move(fraction) => { root.scrub-move(fraction); }
+        scrub-end => { root.scrub-end(); }
+        scrub-abort => { root.scrub-abort(); }
+        player-art: root.player-art;
+        player-has-art: root.player-has-art;
+        player-elapsed: root.player-elapsed;
+        player-duration: root.player-duration;
+        player-elapsed-label: root.player-elapsed-label;
+        player-remaining-label: root.player-remaining-label;
+        browser-songs: root.browser-songs;
+        x: 50px * root.ui-scale;
+        y: 32px * root.ui-scale;
+        width: 320px * root.ui-scale;
+        height: 300px * root.ui-scale;
+        menu-items: root.menu-items;
+        browser-items: root.browser-items;
+        browser-leaves: root.browser-leaves;
+        browser-shuffles: root.browser-shuffles;
+        browser-queue-positions: root.browser-queue-positions;
+        player-queue-position: root.player-queue-position;
+        browse-active: root.browse-active;
+        browse-message: root.browse-message;
+        page-title: root.page-title;
+        player-title: root.player-title;
+        player-artist: root.player-artist;
+        player-album: root.player-album;
+        player-playing: root.player-playing;
+        player-paused: root.player-paused;
+        request-navigation-focus => { root.request-navigation-focus(); }
+        ui-scale: root.ui-scale;
+        battery-level: root.battery-level;
+        battery-charging: root.battery-charging;
+        selected-index <=> root.selected-index;
+    }
+
+    wheel := ClickWheel {
+        width: 230px * root.ui-scale;
+        height: 230px * root.ui-scale;
+        x: (parent.width - self.width) / 2;
+        y: 356px * root.ui-scale;
+        select-item => { root.select-item(); }
+        go-back => { root.go-back(); }
+        scroll-step(delta) => { root.scroll-step(delta); }
+        scroll-start => { root.scroll-start(); }
+        scroll-finish(cancelled) => { root.scroll-finish(cancelled); }
+        transport(action) => { root.transport(action); }
+        ui-scale: root.ui-scale;
+        menu-pressed: root.menu-pressed;
+        prev-pressed: root.prev-pressed;
+        next-pressed: root.next-pressed;
+        play-pressed: root.play-pressed;
+        center-pressed: root.center-pressed;
+    }
+
+    // Fallback move regions for non-macOS backends. On macOS the native monitor
+    // handles the full rounded body minus the border, display and circular wheel.
+    WindowMoveArea {
+        x: 32px * root.ui-scale;
+        y: 2px * root.ui-scale;
+        width: 356px * root.ui-scale;
+        height: 30px * root.ui-scale;
+    } // top
+    WindowMoveArea {
+        x: 2px * root.ui-scale;
+        y: 32px * root.ui-scale;
+        width: 48px * root.ui-scale;
+        height: 300px * root.ui-scale;
+    } // screen left
+    WindowMoveArea {
+        x: 370px * root.ui-scale;
+        y: 32px * root.ui-scale;
+        width: 48px * root.ui-scale;
+        height: 300px * root.ui-scale;
+    } // screen right
+    WindowMoveArea {
+        x: 2px * root.ui-scale;
+        y: 332px * root.ui-scale;
+        width: 416px * root.ui-scale;
+        height: 24px * root.ui-scale;
+    } // gap
+    WindowMoveArea {
+        x: 2px * root.ui-scale;
+        y: 356px * root.ui-scale;
+        width: 93px * root.ui-scale;
+        height: 230px * root.ui-scale;
+    } // wheel left
+    WindowMoveArea {
+        x: 325px * root.ui-scale;
+        y: 356px * root.ui-scale;
+        width: 93px * root.ui-scale;
+        height: 230px * root.ui-scale;
+    } // wheel right
+    WindowMoveArea {
+        x: 32px * root.ui-scale;
+        y: 586px * root.ui-scale;
+        width: 356px * root.ui-scale;
+        height: 52px * root.ui-scale;
+    } // bottom
+}
+
+export component AppWindow inherits Window {
+    preferred-width: 357px;
+    preferred-height: 544px;
+    min-width: 294px;
+    min-height: 448px;
+    max-width: 504px;
+    max-height: 768px;
+    no-frame: true;
+    // macOS owns hit testing; disable winit's unsupported macOS resize path.
+    resize-border-width: 0px;
+    background: transparent;
+    default-font-family: "IBM Plex Sans Condensed";
+    default-font-weight: 700; // Shared by the header, menu, chevrons and wheel labels.
+
+    // Public properties are the bridge from Rust to the visual components.
+    in-out property <int> battery-level: -1;
+    in-out property <bool> battery-charging: false;
+    // Rust-owned MPD snapshot; progress and volume are exposed for later UI work.
+    in-out property <image> player-art;
+    in-out property <bool> player-has-art: false;
+    in-out property <string> player-file: "";
+    in-out property <string> player-elapsed-label: "0:00";
+    in-out property <string> player-remaining-label: "--:--";
+    in-out property <string> player-title: "";
+    in-out property <string> player-artist: "";
+    in-out property <string> player-album: "";
+    in-out property <float> player-elapsed: 0;
+    in-out property <float> player-duration: 0;
+    in-out property <bool> player-playing: false;
+    in-out property <bool> player-paused: false;
+    in-out property <int> player-volume: -1;
+    in-out property <float> player-crossfade: 0;
+    in-out property <bool> player-repeat: false;
+    in-out property <bool> player-random: false;
+    // Single named seek interval, ready for future Settings configuration.
+    in-out property <float> seek-interval-seconds: 5;
+    in-out property <int> player-queue-position: -1;
+
+    // The OS window stays 420:640. Reserve 2% for an outward resize margin,
+    // then scale ALL painted geometry together. Match BODY_FRACTION in macos.rs.
+    property <float> ui-scale: 0.98 * min(root.width / 420px, root.height / 640px);
+
+    in-out property <int> selected-index: 0;
+    in-out property <bool> menu-pressed: false;
+    in-out property <bool> prev-pressed: false;
+    in-out property <bool> next-pressed: false;
+    in-out property <bool> play-pressed: false;
+    in-out property <bool> center-pressed: false;
+
+    in-out property <int> player-queue-length: 0;
+    in-out property <string> player-song-id: "";
+    in-out property <bool> scrubbing: false;
+    in-out property <float> scrub-position: 0;
+    property <string> scrub-song-id: "";
+    property <bool> wheel-seeking: false;
+    property <bool> can-seek: root.page-title == "Now Playing" && !root.browse-active
+        && root.player-duration > 0 && root.player-song-id != ""
+        && (root.player-playing || root.player-paused);
+    callback seek-requested(string, float);
+    changed can-seek => { if !root.can-seek { root.scrubbing = false; } }
+    changed player-song-id => { if root.scrub-song-id != root.player-song-id { root.scrubbing = false; } }
+
+    function begin-scrub() {
+        if root.can-seek {
+            root.scrub-song-id = root.player-song-id;
+            root.scrub-position = max(0, min(root.player-duration, root.player-elapsed));
+            root.scrubbing = true;
+        }
+    }
+    function commit-scrub() {
+        if root.scrubbing && root.can-seek && root.scrub-song-id == root.player-song-id {
+            root.seek-requested(root.scrub-song-id, max(0, min(root.player-duration, root.scrub-position)));
+        }
+        root.scrubbing = false;
+    }
+    function wheel-step(delta: int) {
+        if root.can-seek {
+            if !root.wheel-seeking {
+                if !root.scrubbing { root.begin-scrub(); }
+                root.wheel-seeking = true;
+            }
+            // After cancellation or a track change, ignore the rest of this drag.
+            if root.scrubbing { root.move-selection(delta); }
+        } else if !root.wheel-seeking { root.move-selection(delta); }
+    }
+    function wheel-finish(cancelled: bool) {
+        if root.wheel-seeking {
+            if cancelled { root.scrubbing = false; } else { root.commit-scrub(); }
+        }
+        root.wheel-seeking = false;
+    }
+    function dispatch-transport(action: string) {
+        if root.scrubbing && (action == "previous" || action == "next") {
+            root.move-selection(action == "previous" ? -1 : 1);
+        } else if action == "play-pause" && root.scrubbing { root.commit-scrub(); }
+        else { root.transport-action(action); }
+    }
+    function preview-at(fraction: float) {
+        if root.scrubbing { root.scrub-position = max(0, min(1, fraction)) * root.player-duration; }
+    }
+    pure function time-text(seconds: float) -> string {
+        let s = floor(max(0, seconds));
+        let rest = Math.mod(s, 60);
+        return floor(s / 60) + ":" + (rest < 10 ? "0" : "") + rest;
+    }
+
+    callback transport-action(string);
+    callback browse-open(int);
+    callback browse-back();
+    callback browse-step(int);
+    callback browse-jump(bool);
+    callback refresh-queue();
+    callback refresh-settings();
+
+    // One source for menu contents and one path for all selection changes.
+    // Rust supplies and paginates the home menu through the same browser model.
+    property <[string]> menu-items: [];
+    in-out property <string> page-title: "";
+    in-out property <bool> browse-active: false;
+    in-out property <string> browse-message: "";
+    in-out property <[string]> browser-items: [];
+    in-out property <[bool]> browser-leaves: [];
+    in-out property <[bool]> browser-shuffles: [];
+    in-out property <[bool]> browser-songs: [];
+    in-out property <[int]> browser-queue-positions: [];
+    forward-focus: navigation;
+    init => { navigation.focus(); }
+
+    property <int> last-step: 0;
+    function move-selection(delta: int) {
+        if root.scrubbing {
+            root.scrub-position = max(0, min(root.player-duration, root.scrub-position + delta * root.seek-interval-seconds));
+        } else if root.browse-active {
+            root.last-step = delta;
+            root.browse-step(delta);
+        } else if root.page-title == "" {
+            root.selected-index = max(0, min(root.menu-items.length - 1, root.selected-index + delta));
+            root.last-step = delta;
+        }
+    }
+    function open-selected() {
+        if root.page-title == "Now Playing" && !root.browse-active {
+            if root.scrubbing { root.commit-scrub(); } else { root.begin-scrub(); }
+        } else if root.page-title == "" || root.browse-active {
+            root.browse-open(root.selected-index);
+        }
+    }
+    function back() {
+        if root.scrubbing { root.scrubbing = false; } else { root.browse-back(); }
+    }
+
+    navigation := FocusScope {
+        key-pressed(event) => {
+            // Leave macOS shortcuts (Cmd, Ctrl, Option) untouched.
+            if event.modifiers.meta || event.modifiers.control || event.modifiers.alt {
+                return reject;
+            }
+            // Vim-style navigation keys
+            if event.text == "j" || event.text == Key.DownArrow {
+                root.move-selection(root.scrubbing ? -1 : 1);
+            } else if event.text == "k" || event.text == Key.UpArrow {
+                root.move-selection(root.scrubbing ? 1 : -1);
+            } else if event.text == "g" || event.text == "G" {
+                if root.browse-active { root.browse-jump(event.text == "G"); }
+            } else if event.text == Key.Return {
+                if !root.center-pressed { root.open-selected(); }
+                root.center-pressed = true;
+            } else if event.text == "l" || event.text == Key.RightArrow {
+                if root.page-title == "Now Playing" && !root.browse-active {
+                    if !root.next-pressed || root.scrubbing { root.dispatch-transport("next"); }
+                    root.next-pressed = true;
+                } else {
+                    if !root.center-pressed { root.open-selected(); }
+                    root.center-pressed = true;
+                }
+            } else if event.text == "h" || event.text == Key.LeftArrow {
+                if root.page-title == "Now Playing" && !root.browse-active {
+                    if !root.prev-pressed || root.scrubbing { root.dispatch-transport("previous"); }
+                    root.prev-pressed = true;
+                } else {
+                    if !root.menu-pressed { root.back(); }
+                    root.menu-pressed = true;
+                }
+            } else if event.text == Key.Escape {
+                if !root.menu-pressed { root.back(); }
+                root.menu-pressed = true;
+            } else if event.text == "." {
+                if root.last-step != 0 { root.move-selection(root.last-step); }
+            } else if event.text == "[" {
+                if !root.prev-pressed { root.dispatch-transport("previous"); }
+                root.prev-pressed = true;
+            } else if event.text == "]" {
+                if !root.next-pressed { root.dispatch-transport("next"); }
+                root.next-pressed = true;
+            } else if event.text == Key.Space {
+                if !root.play-pressed { root.dispatch-transport("play-pause"); }
+                root.play-pressed = true;
+            } else if event.text == "n" {
+                // 'n' for next track
+                if !root.next-pressed { root.dispatch-transport("next"); }
+                root.next-pressed = true;
+            } else if event.text == "p" {
+                // 'p' for previous track
+                if !root.prev-pressed { root.dispatch-transport("previous"); }
+                root.prev-pressed = true;
+            } else {
+                return reject;
+            }
+            return accept;
+        }
+        key-released(event) => {
+            if event.text == "n" { root.next-pressed = false; return accept; }
+            if event.text == "p" { root.prev-pressed = false; return accept; }
+            if event.text == "[" { root.prev-pressed = false; return accept; }
+            if event.text == "]" { root.next-pressed = false; return accept; }
+            if event.text == Key.Space { root.play-pressed = false; return accept; }
+            if event.text == "l" || event.text == Key.RightArrow || event.text == Key.Return {
+                root.next-pressed = false;
+                root.center-pressed = false;
+                return accept;
+            }
+            if event.text == "h" || event.text == Key.LeftArrow || event.text == Key.Escape {
+                root.prev-pressed = false;
+                root.menu-pressed = false;
+                return accept;
+            }
+            return reject;
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.scrubbing = false;
+                root.center-pressed = false;
+                root.menu-pressed = false;
+                root.prev-pressed = false;
+                root.next-pressed = false;
+                root.play-pressed = false;
+            }
+        }
+
+        // Keep the sole keyboard handler above every screen and mouse target.
+        shell := DeviceShell {
+        queue-label: root.player-queue-position >= 0 && root.player-queue-position < root.player-queue-length
+            ? (root.player-queue-position + 1) + " of " + root.player-queue-length : "";
+        scrubbing: root.scrubbing; can-seek: root.can-seek;
+        scrub-begin(fraction) => { navigation.focus(); root.begin-scrub(); root.preview-at(fraction); }
+        scrub-move(fraction) => { root.preview-at(fraction); }
+        scrub-end => { root.commit-scrub(); }
+        scrub-abort => { root.scrubbing = false; }
+        player-art: root.player-art;
+        player-has-art: root.player-has-art;
+        player-elapsed: root.scrubbing ? root.scrub-position : root.player-elapsed;
+        player-duration: root.player-duration;
+        player-elapsed-label: root.scrubbing ? root.time-text(root.scrub-position) : root.player-elapsed-label;
+        player-remaining-label: root.scrubbing ? "-" + root.time-text(root.player-duration - root.scrub-position) : root.player-remaining-label;
+        browser-songs: root.browser-songs;
+        width: 420px * root.ui-scale;
+        height: 640px * root.ui-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        menu-items: root.menu-items;
+        browser-items: root.browser-items;
+        browser-leaves: root.browser-leaves;
+        browser-shuffles: root.browser-shuffles;
+        browser-queue-positions: root.browser-queue-positions;
+        player-queue-position: root.player-queue-position;
+        browse-active: root.browse-active;
+        browse-message: root.browse-message;
+        page-title: root.page-title;
+        player-title: root.player-title;
+        player-artist: root.player-artist;
+        player-album: root.player-album;
+        player-playing: root.player-playing;
+        player-paused: root.player-paused;
+        request-navigation-focus => { navigation.focus(); }
+        select-item => { navigation.focus(); root.open-selected(); }
+        go-back => { navigation.focus(); root.back(); }
+        scroll-start => { navigation.focus(); root.wheel-seeking = false; }
+        scroll-step(delta) => { navigation.focus(); root.wheel-step(delta); }
+        scroll-finish(cancelled) => { root.wheel-finish(cancelled); }
+        transport(action) => { navigation.focus(); root.dispatch-transport(action); }
+        ui-scale: root.ui-scale;
+        battery-level: root.battery-level;
+        battery-charging: root.battery-charging;
+        selected-index <=> root.selected-index;
+        menu-pressed: root.menu-pressed;
+        prev-pressed: root.prev-pressed;
+        next-pressed: root.next-pressed;
+        play-pressed: root.play-pressed;
+        center-pressed: root.center-pressed;
+        }
+    }
+}
