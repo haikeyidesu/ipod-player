@@ -1,0 +1,36 @@
+# Build outputs, bundles and generated previews
+/target/
+/dist/
+*.app/
+*.dmg
+*.pkg
+
+# Local configuration, credentials and tooling caches
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+/.cargo/config.toml
+/.idea/
+/.vscode/
+__pycache__/
+*.pyc
+
+# Editors, logs and macOS metadata
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local media and font download archives (never release these)
+/music/
+*.mp3
+*.flac
+*.m4a
+*.wav
+/assets/fonts/**/*.tar.xz
+/assets/fonts/**/*.zip
