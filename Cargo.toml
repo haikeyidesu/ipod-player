@@ -2,6 +2,15 @@
 name = "ipod-player"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A classic iPod-style desktop controller for Music Player Daemon"
+repository = "https://github.com/haikeyidesu/ipod-player"
+
+[package.metadata.macos]
+name = "iPod Player"
+identifier = "io.github.haikeyidesu.ipod-player"
+minimum-system-version = "12.0"
+icon = "assets/icon/AppIcon.icns"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
