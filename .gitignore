@@ -34,3 +34,10 @@ __pycache__/
 *.wav
 /assets/fonts/**/*.tar.xz
 /assets/fonts/**/*.zip
+
+# Keep the font distribution's unused variants local
+/assets/fonts/IBM_Plex_Sans_Condensed/*.ttf
+!/assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Bold.ttf
+/assets/fonts/Symbols_Nerd_Font_Mono/*.ttf
+!/assets/fonts/Symbols_Nerd_Font_Mono/SymbolsNerdFontMono-Regular.ttf
+/assets/fonts/Symbols_Nerd_Font_Mono/*.conf
