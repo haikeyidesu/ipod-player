@@ -59,11 +59,7 @@ pub fn start(app: &AppWindow) -> mpsc::Sender<String> {
                         return;
                     }
                     app.set_player_has_art(pixels.is_some());
-                    app.set_player_art(
-                        pixels
-                            .map(|p| slint::Image::from_rgba8(p))
-                            .unwrap_or_default(),
-                    );
+                    app.set_player_art(pixels.map(slint::Image::from_rgba8).unwrap_or_default());
                 }
             })
             .is_err()

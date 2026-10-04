@@ -52,15 +52,20 @@ impl Record {
 }
 
 fn choose(records: Vec<Record>, track: &Track) -> Lyrics {
-    let mut candidates: Vec<_> = records
+    // Keep the parsed result alongside its metadata: filtering and ranking must
+    // not repeatedly parse/sort the same LRC transcript.
+    let candidates: Vec<_> = records
         .into_iter()
         .filter(|r| r.matches(track))
-        .filter(|r| r.lyrics() != Lyrics::Missing)
+        .filter_map(|record| {
+            let lyrics = record.lyrics();
+            (lyrics != Lyrics::Missing).then_some((record, lyrics))
+        })
         .collect();
     // Missing disambiguating metadata must not choose arbitrarily among releases
     // or materially different durations, even if one happens to be synced.
-    if candidates.iter().any(|a| {
-        candidates.iter().any(|b| {
+    if candidates.iter().any(|(a, _)| {
+        candidates.iter().any(|(b, _)| {
             (track.album.trim().is_empty()
                 && normalized(&a.album_name) != normalized(&b.album_name))
                 || (a.duration - b.duration).abs() > 2.0
@@ -69,14 +74,14 @@ fn choose(records: Vec<Record>, track: &Track) -> Lyrics {
     }) {
         return Lyrics::Missing;
     }
-    candidates.sort_by_key(|r| match r.lyrics() {
-        Lyrics::Synced(_) => 0,
-        Lyrics::Plain(_) => 1,
-        _ => 2,
-    });
     candidates
-        .first()
-        .map(Record::lyrics)
+        .into_iter()
+        .min_by_key(|(_, lyrics)| match lyrics {
+            Lyrics::Synced(_) => 0,
+            Lyrics::Plain(_) => 1,
+            _ => 2,
+        })
+        .map(|(_, lyrics)| lyrics)
         .unwrap_or(Lyrics::Missing)
 }
 
@@ -268,6 +273,27 @@ mod tests {
         );
         let lyrics = client.fetch(&track, &|| true).unwrap();
         assert!(matches!(lyrics, Lyrics::Synced(_) | Lyrics::Plain(_)));
+    }
+
+    #[test]
+    fn selection_keeps_first_tie_and_rejects_ambiguous_recordings() {
+        let track = Track::new("f", "Song", "Artist", "Album", 120.0);
+        let first = record("Song", "Album", false);
+        let mut second = record("Song", "Album", false);
+        second.plain_lyrics = Some("Other words".into());
+        assert_eq!(
+            choose(vec![first, second], &track),
+            Lyrics::Plain("Words".into())
+        );
+        let mut missing = record("Song", "Album", false);
+        missing.plain_lyrics = None;
+        assert_eq!(choose(vec![missing], &track), Lyrics::Missing);
+        let mut instrumental = record("Song", "Album", false);
+        instrumental.instrumental = true;
+        assert_eq!(
+            choose(vec![record("Song", "Album", true), instrumental], &track),
+            Lyrics::Missing
+        );
     }
 
     #[test]

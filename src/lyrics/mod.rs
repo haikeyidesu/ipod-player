@@ -153,13 +153,13 @@ impl LyricsService {
         // UI-owned presentation is accessed only in the event loop via this callback.
         let state = presentation.clone();
         app.on_lyrics_delivered(move |generation, payload| {
-            if let Some(app) = weak.upgrade() {
-                if let (Ok(generation), Ok(lyrics)) = (
+            if let Some(app) = weak.upgrade()
+                && let (Ok(generation), Ok(lyrics)) = (
                     generation.parse::<u64>(),
                     serde_json::from_str::<Lyrics>(&payload),
-                ) {
-                    state.borrow_mut().apply(&app, generation, lyrics);
-                }
+                )
+            {
+                state.borrow_mut().apply(&app, generation, lyrics);
             }
         });
         let weak = app.as_weak();

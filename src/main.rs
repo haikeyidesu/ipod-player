@@ -61,6 +61,16 @@ mod macos;
 #[path = "platform/battery.rs"]
 mod battery;
 
+/// Elapsed/metadata changes do not invalidate the browser's settings models.
+fn settings_changed(previous: Option<&mpd::PlayerState>, current: &mpd::PlayerState) -> bool {
+    previous.is_none_or(|old| {
+        old.volume != current.volume
+            || old.crossfade != current.crossfade
+            || old.repeat != current.repeat
+            || old.random != current.random
+    })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = AppWindow::new()?;
     // One worker serializes transport commands and reads state. Library requests
@@ -115,6 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if last_snapshot.as_ref() != Some(&state) {
                 let queue_changed = last_snapshot.as_ref().map(|old| old.queue_version)
                     != Some(state.queue_version);
+                let refresh_settings = settings_changed(last_snapshot.as_ref(), &state);
                 last_snapshot = Some(state.clone());
                 let weak = weak.clone();
                 let artwork_sender = artwork_sender.clone();
@@ -172,7 +183,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.set_player_crossfade(state.crossfade as f32);
                         app.set_player_repeat(state.repeat);
                         app.set_player_random(state.random);
-                        app.invoke_refresh_settings();
+                        if refresh_settings {
+                            app.invoke_refresh_settings();
+                        }
                         app.set_player_queue_position(
                             state
                                 .queue_position
@@ -204,20 +217,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let volume_sender = sender.clone();
     let volume_weak = app.as_weak();
     app.on_volume_requested(move |value| {
-        if (0..=100).contains(&value) {
-            if let Some(app) = volume_weak.upgrade() {
-                // Keep successive key presses relative to the latest requested value.
-                app.set_volume_target(value);
-                if volume_sender
-                    .send(StatusCommand::Volume {
-                        value: value as u8,
-                        app: volume_weak.clone(),
-                    })
-                    .is_err()
-                {
-                    app.set_volume_target(-1);
-                    eprintln!("MPD command worker stopped");
-                }
+        if (0..=100).contains(&value)
+            && let Some(app) = volume_weak.upgrade()
+        {
+            // Keep successive key presses relative to the latest requested value.
+            app.set_volume_target(value);
+            if volume_sender
+                .send(StatusCommand::Volume {
+                    value: value as u8,
+                    app: volume_weak.clone(),
+                })
+                .is_err()
+            {
+                app.set_volume_target(-1);
+                eprintln!("MPD command worker stopped");
             }
         }
     });
@@ -239,23 +252,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let seek_sender = sender.clone();
     app.on_seek_requested(move |id, seconds| {
-        if let Ok(id) = id.parse::<u64>() {
-            if seek_sender
+        if let Ok(id) = id.parse::<u64>()
+            && seek_sender
                 .send(StatusCommand::Seek {
                     id,
                     seconds: seconds as f64,
                 })
                 .is_err()
-            {
-                eprintln!("MPD command worker stopped");
-            }
+        {
+            eprintln!("MPD command worker stopped");
         }
     });
     app.on_transport_action(move |action| {
-        if let Some(command) = mpd::Transport::from_ui(&action) {
-            if sender.send(StatusCommand::Transport(command)).is_err() {
-                eprintln!("MPD command worker stopped");
-            }
+        if let Some(command) = mpd::Transport::from_ui(&action)
+            && sender.send(StatusCommand::Transport(command)).is_err()
+        {
+            eprintln!("MPD command worker stopped");
         }
     });
 
@@ -299,4 +311,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_refresh_ignores_playback_ticks_but_tracks_all_settings() {
+        let previous = mpd::PlayerState::default();
+        assert!(settings_changed(None, &previous));
+        let mut current = previous.clone();
+        current.elapsed = 12.0;
+        current.title = "New track".into();
+        current.playing = true;
+        assert!(!settings_changed(Some(&previous), &current));
+        for changed in [
+            mpd::PlayerState {
+                volume: Some(42),
+                ..previous.clone()
+            },
+            mpd::PlayerState {
+                crossfade: 5.0,
+                ..previous.clone()
+            },
+            mpd::PlayerState {
+                repeat: true,
+                ..previous.clone()
+            },
+            mpd::PlayerState {
+                random: true,
+                ..previous.clone()
+            },
+        ] {
+            assert!(settings_changed(Some(&previous), &changed));
+            assert!(settings_changed(Some(&changed), &previous));
+        }
+    }
 }

@@ -30,8 +30,7 @@ pub fn parse(lrc: &str) -> Vec<LyricLine> {
                 .parse::<f64>()
                 .ok()
         })
-        .filter(|n| n.is_finite())
-        .next_back()
+        .rfind(|n| n.is_finite())
         .unwrap_or(0.0)
         / 1000.0;
     let mut lines = Vec::new();
