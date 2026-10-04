@@ -5,7 +5,8 @@
 //! - Status command parsing (title, artist, album, elapsed, duration, playing)
 //! - Current song metadata retrieval
 //!
-//! Architecture: Pure std library, no external dependencies. Isolated from Slint.
+//! Protocol I/O is isolated from Slint. Queue shuffling uses `rand`; callers
+//! must run blocking operations on workers, never on the presentation thread.
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpStream, ToSocketAddrs},
@@ -236,6 +237,13 @@ pub fn read_status() -> Result<PlayerState, String> {
 ///   percentageplayed: "42.5"
 ///   elapsed: "0:01:23.45" (MM:SS.cc format)
 fn parse_status_response(reader: &mut impl BufRead) -> Result<PlayerState, String> {
+    parse_status_response_until(reader, "OK")
+}
+
+fn parse_status_response_until(
+    reader: &mut impl BufRead,
+    terminator: &str,
+) -> Result<PlayerState, String> {
     let mut state = PlayerState {
         file: String::new(),
         song_id: None,
@@ -262,8 +270,11 @@ fn parse_status_response(reader: &mut impl BufRead) -> Result<PlayerState, Strin
             return Err("MPD closed the connection before replying".into());
         }
         let line = line.trim_end_matches(['\r', '\n']);
-        if line == "OK" {
+        if line == terminator {
             break;
+        }
+        if line == "OK" || line == "list_OK" {
+            return Err("Unexpected MPD reply boundary".into());
         }
         if line.starts_with("ACK ") {
             return Err(format!("MPD rejected the command: {line}"));
@@ -300,7 +311,7 @@ fn parse_status_response(reader: &mut impl BufRead) -> Result<PlayerState, Strin
             "songname" | "file" => {
                 // Extract just the filename from path if present
                 let path = value.trim();
-                if let Some(filename) = path.split('/').last() {
+                if let Some(filename) = path.split('/').next_back() {
                     state.title = filename.to_string();
                 } else {
                     state.title = path.to_string();
@@ -364,7 +375,7 @@ fn parse_decimal_time(s: &str) -> Result<f64, String> {
 /// Read current song metadata from MPD.
 ///
 /// Sends `currentsong` command and parses the response into a SongInfo struct.
-pub fn read_current_song() -> Result<SongInfo, String> {
+fn read_snapshot() -> Result<(PlayerState, SongInfo), String> {
     let (host, port) = endpoint()?;
     let addresses = (host.as_str(), port)
         .to_socket_addrs()
@@ -390,13 +401,7 @@ pub fn read_current_song() -> Result<SongInfo, String> {
                     return Err(format!("Not an MPD server: {}", greeting.trim()));
                 }
 
-                // Send currentsong command
-                writeln!(reader.get_mut(), "currentsong").map_err(|err| err.to_string())?;
-                reader.get_mut().flush().map_err(|err| err.to_string())?;
-
-                // Read and parse response
-                let info = parse_song_response(&mut reader)?;
-                return Ok(info);
+                return snapshot_on_connection(&mut reader);
             }
             Err(err) => last_error = err.to_string(),
         }
@@ -404,6 +409,23 @@ pub fn read_current_song() -> Result<SongInfo, String> {
     Err(format!(
         "Cannot connect to MPD at {host}:{port}: {last_error}"
     ))
+}
+
+/// Read both replies on one connection. `list_OK` preserves reply boundaries;
+/// command lists reduce round trips but do not guarantee an atomic snapshot.
+fn snapshot_on_connection<S: std::io::Read + Write>(
+    reader: &mut BufReader<S>,
+) -> Result<(PlayerState, SongInfo), String> {
+    writeln!(
+        reader.get_mut(),
+        "command_list_ok_begin\nstatus\ncurrentsong\ncommand_list_end"
+    )
+    .map_err(|err| err.to_string())?;
+    reader.get_mut().flush().map_err(|err| err.to_string())?;
+    let state = parse_status_response_until(reader, "list_OK")?;
+    let song = parse_song_response_until(reader, "list_OK")?;
+    response(reader)?;
+    Ok((state, song))
 }
 
 /// Parse the raw currentsong response into a SongInfo struct.
@@ -416,7 +438,15 @@ pub fn read_current_song() -> Result<SongInfo, String> {
 ///   track: 1
 ///   disctotal: 1
 ///   duration: "0:03:45.12"
+#[cfg(test)]
 fn parse_song_response(reader: &mut impl BufRead) -> Result<SongInfo, String> {
+    parse_song_response_until(reader, "OK")
+}
+
+fn parse_song_response_until(
+    reader: &mut impl BufRead,
+    terminator: &str,
+) -> Result<SongInfo, String> {
     let mut info = SongInfo {
         file: String::new(),
         id: None,
@@ -433,8 +463,11 @@ fn parse_song_response(reader: &mut impl BufRead) -> Result<SongInfo, String> {
             return Err("MPD closed the connection before replying".into());
         }
         let line = line.trim_end_matches(['\r', '\n']);
-        if line == "OK" {
+        if line == terminator {
             break;
+        }
+        if line == "OK" || line == "list_OK" {
+            return Err("Unexpected MPD reply boundary".into());
         }
         if line.starts_with("ACK ") {
             return Err(format!("MPD rejected the command: {line}"));
@@ -474,12 +507,16 @@ fn parse_song_response(reader: &mut impl BufRead) -> Result<SongInfo, String> {
 
 /// Fetch status and song metadata as one UI snapshot. Call only from a worker thread.
 pub fn read_player_state() -> Result<PlayerState, String> {
-    let mut state = read_status()?;
-    let mut song = read_current_song()?;
+    read_player_state_using(read_snapshot)
+}
+
+fn read_player_state_using(
+    mut snapshot: impl FnMut() -> Result<(PlayerState, SongInfo), String>,
+) -> Result<PlayerState, String> {
+    let (mut state, mut song) = snapshot()?;
     // Avoid pairing the previous song's elapsed time with new metadata.
     if state.song_id != song.id {
-        state = read_status()?;
-        song = read_current_song()?;
+        (state, song) = snapshot()?;
         if state.song_id != song.id {
             return Err("Track changed while reading state".into());
         }
@@ -518,10 +555,11 @@ pub fn send(action: Transport) -> Result<(), String> {
 }
 
 fn previous_command(state: &PlayerState) -> String {
-    if state.elapsed > 3.0 && (state.playing || state.paused) {
-        if let Some(id) = state.song_id {
-            return format!("seekid {id} 0");
-        }
+    if state.elapsed > 3.0
+        && (state.playing || state.paused)
+        && let Some(id) = state.song_id
+    {
+        return format!("seekid {id} 0");
     }
     "previous".into()
 }
@@ -809,10 +847,11 @@ fn queue_from_fields(fields: Vec<(String, String)>) -> Vec<QueueSong> {
     let mut entries = Vec::new();
     let mut fields_for_song = Vec::new();
     for (key, value) in fields {
-        if key == "file" && !fields_for_song.is_empty() {
-            if let Some(song) = entry(std::mem::take(&mut fields_for_song)) {
-                entries.push(song);
-            }
+        if key == "file"
+            && !fields_for_song.is_empty()
+            && let Some(song) = entry(std::mem::take(&mut fields_for_song))
+        {
+            entries.push(song);
         }
         fields_for_song.push((key, value));
     }
@@ -1191,7 +1230,7 @@ fn artwork_chunk(reader: &mut impl BufRead) -> Result<(usize, Vec<u8>), String> 
             reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
             let mut newline = [0];
             reader.read_exact(&mut newline).map_err(|e| e.to_string())?;
-            if newline != [b'\n'] {
+            if newline != *b"\n" {
                 return Err("Invalid binary delimiter".into());
             }
             data = Some(bytes);
@@ -1243,6 +1282,96 @@ pub fn browse_directory(path: &str) -> Result<Vec<DirectoryEntry>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshot_batches_two_commands_on_one_connection() {
+        // Duplex fixture: no ports or process-global MPD environment changes.
+        struct Wire {
+            reply: std::io::Cursor<&'static [u8]>,
+            sent: Vec<u8>,
+        }
+        impl std::io::Read for Wire {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.reply.read(bytes)
+            }
+        }
+        impl Write for Wire {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.sent.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let wire = Wire {
+            reply: std::io::Cursor::new(b"songid: 7\nelapsed: 12\nduration: 99\nstate: pause\nlist_OK\nfile: fixture.flac\nId: 7\nTitle: Fixture\nduration: 100\nlist_OK\nOK\n"),
+            sent: Vec::new(),
+        };
+        let mut reader = BufReader::new(wire);
+        let (state, song) = snapshot_on_connection(&mut reader).unwrap();
+        assert_eq!(
+            reader.get_ref().sent,
+            b"command_list_ok_begin\nstatus\ncurrentsong\ncommand_list_end\n"
+        );
+        assert_eq!(state.song_id, song.id);
+        assert_eq!(state.elapsed, 12.0);
+        assert_eq!(state.duration, 99.0);
+        assert_eq!(song.duration, 100.0);
+        assert!(state.paused);
+        assert_eq!(
+            reader.get_ref().reply.position(),
+            reader.get_ref().reply.get_ref().len() as u64
+        );
+    }
+
+    #[test]
+    fn snapshot_retries_mismatches_once_without_mixing_metadata() {
+        let pair = |id, song_id| {
+            let state = PlayerState {
+                song_id: Some(id),
+                elapsed: id as f64,
+                ..Default::default()
+            };
+            let song = parse_song_response(&mut std::io::Cursor::new(format!(
+                "Id: {song_id}\nfile: {song_id}.flac\nduration: 100\nOK\n"
+            )))
+            .unwrap();
+            Ok((state, song))
+        };
+        let mut calls = 0;
+        let state = read_player_state_using(|| {
+            calls += 1;
+            pair(calls, 2)
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(state.file, "2.flac");
+        assert_eq!(state.elapsed, 2.0);
+        assert_eq!(state.duration, 100.0);
+        calls = 0;
+        assert!(
+            read_player_state_using(|| {
+                calls += 1;
+                pair(calls, calls + 1)
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn snapshot_rejects_missing_boundaries_errors_and_truncation() {
+        use std::io::Cursor;
+        for reply in ["songid: 1\nOK\n", "ACK [5@0] {} error\n", "songid: 1\n"] {
+            assert!(parse_status_response_until(&mut Cursor::new(reply), "list_OK").is_err());
+        }
+        for reply in ["Id: 1\nOK\n", "ACK [5@1] {} error\n", "Id: 1\n"] {
+            assert!(parse_song_response_until(&mut Cursor::new(reply), "list_OK").is_err());
+        }
+        assert!(response(&mut Cursor::new("")).is_err());
+        assert!(response(&mut Cursor::new("ACK [5@1] {} error\n")).is_err());
+    }
+
     use super::*;
     use std::io::Cursor;
 
