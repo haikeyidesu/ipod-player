@@ -1,0 +1,98 @@
+// One focusable LCD volume control; mouse gestures commit once on release.
+export component VolumeSlider inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <int> volume: -1;
+    in property <bool> selected: true;
+    callback set-volume(int);
+    callback step(int);
+    callback request-focus();
+    property <bool> dragging: false;
+    property <int> preview: 0;
+    property <int> displayed: root.dragging ? root.preview : max(0, root.volume);
+    background: transparent;
+    clip: true;
+    Text {
+        y: 8px * root.ui-scale;
+        height: 28px * root.ui-scale;
+        width: parent.width;
+        text: root.volume < 0 ? "MPD mixer unavailable" : "MPD Volume  " + root.displayed + "%";
+        color: root.volume < 0 ? #778895 : #203d59;
+        font-size: 20px * root.ui-scale;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        x: 12px * root.ui-scale;
+        y: 68px * root.ui-scale;
+        width: parent.width - 24px * root.ui-scale;
+        height: 42px * root.ui-scale;
+        border-radius: 10px * root.ui-scale;
+        border-width: 1px * root.ui-scale;
+        border-color: root.selected ? #317db2 : #9cb0bb;
+        background: root.selected ? #d5eafa : #ebf2f6;
+        Rectangle {
+            x: 14px * root.ui-scale;
+            y: 17px * root.ui-scale;
+            width: parent.width - 28px * root.ui-scale;
+            height: 8px * root.ui-scale;
+            border-radius: 4px * root.ui-scale;
+            background: #95b1c4;
+            Rectangle {
+                width: parent.width * root.displayed / 100;
+                height: parent.height;
+                border-radius: 4px * root.ui-scale;
+                background: @linear-gradient(180deg, #8ad5f5 0%, #1c85c8 100%);
+            }
+            Rectangle {
+                x: (parent.width - 15px * root.ui-scale) * root.displayed / 100;
+                y: -7px * root.ui-scale;
+                width: 15px * root.ui-scale;
+                height: 22px * root.ui-scale;
+                border-radius: 6px * root.ui-scale;
+                border-width: 1px * root.ui-scale;
+                border-color: #417594;
+                background: @linear-gradient(180deg, #ffffff 0%, #bdd8e7 100%);
+            }
+        }
+        touch := TouchArea {
+            enabled: root.volume >= 0;
+            function position() -> int {
+                return round(max(0, min(100, (self.mouse-x - 14px * root.ui-scale)
+                    / max(1px, self.width - 28px * root.ui-scale) * 100)));
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.cancel {
+                    root.dragging = false;
+                } else if event.button == PointerEventButton.left {
+                    if event.kind == PointerEventKind.down {
+                        root.request-focus();
+                        root.dragging = true;
+                        root.preview = self.position();
+                    } else if event.kind == PointerEventKind.up && root.dragging {
+                        root.preview = self.position();
+                        root.dragging = false;
+                        if root.preview != root.volume { root.set-volume(root.preview); }
+                    }
+                }
+            }
+            moved => { if self.pressed && root.dragging { root.preview = self.position(); } }
+            scroll-event(event) => {
+                if event.delta-y != 0px {
+                    root.request-focus();
+                    root.step(event.delta-y > 0px ? -1 : 1);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+    Text {
+        y: 132px * root.ui-scale;
+        height: 26px * root.ui-scale;
+        width: parent.width;
+        text: root.volume < 0 ? "Enable an MPD software mixer" : "j / , quieter     k / . louder";
+        color: #526775;
+        font-size: 14px * root.ui-scale;
+        horizontal-alignment: center;
+    }
+}

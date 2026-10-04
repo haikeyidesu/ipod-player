@@ -9,7 +9,7 @@ cargo fmt --check
 cargo check --locked
 cargo test --locked
 MACOSX_DEPLOYMENT_TARGET=12.0 cargo build --release --locked
-python3 scripts/bundle-macos.py
+python3 scripts/bundle-macos.py # also installs /Applications/iPod Player.app
 APP="$PWD/target/bundle/macos/iPod Player.app"
 plutil -p "$APP/Contents/Info.plist"
 file "$APP/Contents/MacOS/ipod-player"

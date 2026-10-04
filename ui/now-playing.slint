@@ -1,3 +1,5 @@
+import { MarqueeLabel } from "marquee-label.slint";
+
 export component NowPlayingPanel inherits Rectangle {
     in property <float> ui-scale: 1;
     in property <string> queue-label;
@@ -7,6 +9,9 @@ export component NowPlayingPanel inherits Rectangle {
     callback scrub-move(float);
     callback scrub-end();
     callback scrub-abort();
+    callback activate();
+    callback request-focus();
+    callback scroll-step(int);
     property <bool> dragging: false;
     changed scrubbing => { if !root.scrubbing { root.dragging = false; } }
     in property <image> artwork;
@@ -21,6 +26,17 @@ export component NowPlayingPanel inherits Rectangle {
     background: transparent;
     clip: true;
 
+    TouchArea {
+        clicked => { root.request-focus(); }
+        double-clicked => { root.activate(); }
+        scroll-event(event) => {
+            if event.delta-y != 0px {
+                root.scroll-step(event.delta-y > 0px ? 1 : -1);
+                return accept;
+            }
+            return reject;
+        }
+    }
     VerticalLayout {
         padding: 0px;
         padding-bottom: 8px * root.ui-scale;
@@ -82,30 +98,27 @@ export component NowPlayingPanel inherits Rectangle {
                         height: 24px * root.ui-scale;
                         background: transparent;
                         clip: true;
-                        Text {
-                            x: 0px; y: 0px;
-                            width: parent.width; height: parent.height;
+                        MarqueeLabel {
+                            width: parent.width;
+                            height: parent.height;
                             text: root.title == "" ? "No music loaded" : root.title;
-                            font-size: 18px * root.ui-scale;
-                            color: #202932;
-                            wrap: no-wrap;
-                            overflow: elide;
-                            vertical-alignment: center;
+                            font-size: 18;
+                            ui-scale: root.ui-scale;
+                            selected: root.title != "";
                         }
                     }
                     Rectangle {
                         height: 22px * root.ui-scale;
                         background: transparent;
                         clip: true;
-                        Text {
-                            x: 0px; y: 0px;
-                            width: parent.width; height: parent.height;
+                        MarqueeLabel {
+                            width: parent.width;
+                            height: parent.height;
                             text: root.artist;
-                            font-size: 16px * root.ui-scale;
-                            color: #34485b;
-                            wrap: no-wrap;
-                            overflow: elide;
-                            vertical-alignment: center;
+                            font-size: 16;
+                            ui-scale: root.ui-scale;
+                            foreground: #34485b;
+                            selected: root.artist != "";
                         }
                     }
                     Rectangle {
@@ -135,20 +148,20 @@ export component NowPlayingPanel inherits Rectangle {
             vertical-stretch: 1;
             background: transparent;
         }
-        // Thin visual track, with a larger invisible mouse hit area.
+        // Recessed Aqua track, with a larger invisible mouse hit area.
         Rectangle {
             height: 24px * root.ui-scale;
             background: transparent;
             track := Rectangle {
                 x: 0px; y: 5px * root.ui-scale;
                 width: parent.width; height: 14px * root.ui-scale;
-                background: @linear-gradient(180deg, #aabcc9 0%, #e1eaf0 50%, #edf3f7 100%);
+                background: @linear-gradient(180deg, #8ca4b4 0%, #d3e2eb 25%, #e8f0f5 70%, #f8fbfd 100%);
                 border-width: 1px * root.ui-scale;
                 border-color: #768f9f;
                 Rectangle {
                     x: 1px * root.ui-scale; y: 1px * root.ui-scale;
                     width: parent.width - 2px * root.ui-scale; height: 1px * root.ui-scale;
-                    background: #5b728344;
+                    background: #425e7252;
                 }
                 Rectangle {
                     x: 1px * root.ui-scale; y: parent.height - 2px * root.ui-scale;
@@ -160,13 +173,13 @@ export component NowPlayingPanel inherits Rectangle {
                     height: parent.height - 4px * root.ui-scale;
                     width: (parent.width - 4px * root.ui-scale) * (root.duration > 0 ? max(0, min(1, root.elapsed / root.duration)) : 0);
                     background: root.scrubbing
-                        ? @linear-gradient(180deg, #b5efff 0%, #51c7fa 30%, #259edd 58%, #1671b5 100%)
-                        : @linear-gradient(180deg, #89dcfa 0%, #32b4eb 30%, #188bcb 58%, #115b9c 100%);
+                        ? @linear-gradient(180deg, #c5f4ff 0%, #70d2f9 26%, #2aa9e0 65%, #1a72b1 100%)
+                        : @linear-gradient(180deg, #abebfc 0%, #5ec2ed 26%, #2195cd 65%, #165b96 100%);
                     clip: true;
-                    for stripe in 64: Rectangle {
-                        x: stripe * 5px * root.ui-scale;
-                        width: 1px * root.ui-scale; height: parent.height;
-                        background: #124e7a22;
+                    Rectangle {
+                        width: parent.width;
+                        height: 1px * root.ui-scale;
+                        background: #ffffff83;
                     }
                 }
                 if root.scrubbing: Rectangle {

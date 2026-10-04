@@ -1,33 +1,131 @@
 //! macOS-only window behavior. Slint continues to own the visuals.
-use std::{cell::Cell, ptr::NonNull};
+use std::{
+    cell::{Cell, RefCell},
+    ptr::NonNull,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use block2::RcBlock;
-use objc2::{rc::Retained, runtime::AnyObject};
+use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{
-    NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent, NSEventMask,
-    NSEventType, NSView,
+    NSApplication, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
+    NSEventMask, NSEventType, NSFloatingWindowLevel, NSScreen, NSView, NSWindow,
+    NSWindowCollectionBehavior,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::ComponentHandle;
 
-use crate::AppWindow;
-
-const RATIO: f64 = 420.0 / 640.0;
-const MIN_WIDTH: f64 = 294.0;
-const MAX_WIDTH: f64 = 504.0;
+use crate::{
+    AppWindow,
+    window_settings::{Geometry, MAX_WIDTH, MIN_WIDTH, RATIO, Store},
+};
 // Must match AppWindow's visual scale. The remaining 2% is a resize margin.
 const BODY_FRACTION: f64 = 0.98;
 
 pub struct ResizeMonitor {
     token: Retained<AnyObject>,
+    window: Retained<NSWindow>,
+    settings: Rc<RefCell<Store>>,
+    timer: slint::Timer,
 }
 
 impl Drop for ResizeMonitor {
     fn drop(&mut self) {
         // SAFETY: token was returned by addLocalMonitorForEventsMatchingMask_handler.
         unsafe { NSEvent::removeMonitor(&self.token) };
+        self.timer.stop();
+        self.settings
+            .borrow_mut()
+            .record(self.window.frame().into(), Instant::now());
+        save(&self.settings);
     }
+}
+
+impl From<NSRect> for Geometry {
+    fn from(frame: NSRect) -> Self {
+        Self {
+            x: frame.origin.x,
+            y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height,
+        }
+    }
+}
+impl From<Geometry> for NSRect {
+    fn from(frame: Geometry) -> Self {
+        Self {
+            origin: NSPoint {
+                x: frame.x,
+                y: frame.y,
+            },
+            size: NSSize {
+                width: frame.width,
+                height: frame.height,
+            },
+        }
+    }
+}
+fn screens() -> Vec<Geometry> {
+    NSScreen::screens(MainThreadMarker::new().expect("window settings run on the AppKit thread"))
+        .iter()
+        .map(|screen| screen.visibleFrame().into())
+        .collect()
+}
+// Do not replace the backend's other Spaces/fullscreen/cycling flags. Restore
+// its exact original behavior when unpinned, including any original join flag.
+fn pinned_behavior(
+    original: NSWindowCollectionBehavior,
+    pinned: bool,
+) -> NSWindowCollectionBehavior {
+    if pinned {
+        original | NSWindowCollectionBehavior::CanJoinAllSpaces
+    } else {
+        original
+    }
+}
+
+fn save(settings: &RefCell<Store>) {
+    if let Err(err) = settings.borrow_mut().flush() {
+        eprintln!("Cannot save window preferences: {err}");
+    }
+}
+
+/// Seed Slint's size before show; AppKit restores the global origin in the
+/// existing RenderingSetup hook, before the backend reveals its first frame.
+pub fn prepare(app: &AppWindow) -> Rc<RefCell<Store>> {
+    let path = std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join("Library/Application Support/io.github.haikeyidesu.ipod-player/window.json")
+    });
+    let mut settings = Store::load(path);
+    let screens = screens();
+    let initial = settings
+        .preferences
+        .geometry
+        .unwrap_or_else(|| {
+            let screen = screens.first().copied().unwrap_or(Geometry {
+                x: 0.0,
+                y: 0.0,
+                width: 420.0,
+                height: 640.0,
+            });
+            Geometry {
+                x: screen.x + (screen.width - 420.0) / 2.0,
+                y: screen.y + (screen.height - 640.0) / 2.0,
+                width: 420.0,
+                height: 640.0,
+            }
+        })
+        .restored(&screens);
+    settings.record(initial, Instant::now());
+    app.set_window_pinned(settings.preferences.always_on_top);
+    app.window().set_size(slint::LogicalSize::new(
+        initial.width as f32,
+        initial.height as f32,
+    ));
+    Rc::new(RefCell::new(settings))
 }
 
 #[derive(Clone, Copy)]
@@ -174,7 +272,7 @@ fn frame_difference(a: NSRect, b: NSRect) -> f64 {
         .max((a.size.height - b.size.height).abs())
 }
 
-pub fn install(app: &AppWindow) -> Result<ResizeMonitor, String> {
+pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMonitor, String> {
     let handle = app.window().window_handle();
     let raw = handle
         .window_handle()
@@ -209,12 +307,90 @@ pub fn install(app: &AppWindow) -> Result<ResizeMonitor, String> {
         height: MAX_WIDTH / RATIO,
     });
 
+    let original_level = window.level();
+    let original_behavior = window.collectionBehavior();
+    if let Some(frame) = settings.borrow().preferences.geometry {
+        window.setFrame_display(frame.restored(&screens()).into(), false);
+    }
+    if settings.borrow().preferences.always_on_top {
+        window.setCollectionBehavior(pinned_behavior(original_behavior, true));
+        window.setLevel(NSFloatingWindowLevel);
+    }
+    let pin_window = window.clone();
+    let pin_settings = settings.clone();
+    let weak = app.as_weak();
+    app.on_window_pin_requested(move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let pinned = !pin_settings.borrow().preferences.always_on_top;
+        // No makeKey/orderFront or frame changes: joining Spaces and floating
+        // must not activate the app or disturb native dragging/resizing.
+        pin_window.setCollectionBehavior(pinned_behavior(original_behavior, pinned));
+        pin_window.setLevel(if pinned {
+            NSFloatingWindowLevel
+        } else {
+            original_level
+        });
+        let mut settings = pin_settings.borrow_mut();
+        settings.pin(pinned);
+        settings.record(pin_window.frame().into(), Instant::now());
+        drop(settings);
+        app.set_window_pinned(pinned);
+        save(&pin_settings);
+        app.invoke_show_status(
+            if pinned {
+                "Always on Top On"
+            } else {
+                "Always on Top Off"
+            }
+            .into(),
+        );
+    });
+    let reset_window = window.clone();
+    let reset_settings = settings.clone();
+    app.on_window_reset_requested(move || {
+        let frame = Geometry::from(reset_window.frame())
+            .canonical()
+            .restored(&screens());
+        reset_window.setFrame_display(frame.into(), true);
+        reset_settings
+            .borrow_mut()
+            .record(reset_window.frame().into(), Instant::now());
+        save(&reset_settings);
+    });
+    let timer = slint::Timer::default();
+    let observed_window = window.clone();
+    let observed_settings = settings.clone();
+    let mut previous_screens = screens();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(250),
+        move || {
+            let current_screens = screens();
+            if previous_screens != current_screens {
+                let frame = Geometry::from(observed_window.frame()).restored(&current_screens);
+                observed_window.setFrame_display(frame.into(), true);
+                previous_screens = current_screens;
+            }
+            let now = Instant::now();
+            let mut settings = observed_settings.borrow_mut();
+            settings.record(observed_window.frame().into(), now);
+            let due = settings.due(now);
+            drop(settings);
+            if due {
+                save(&observed_settings);
+            }
+        },
+    );
+
     let drag = Cell::new(None::<Drag>);
     let last_request = Cell::new(None::<NSRect>);
     let reported_frame_adjustment = Cell::new(false);
     let debug_resize = std::env::var_os("IPOD_RESIZE_DEBUG").is_some();
     let was_edge = Cell::new(false);
     let resize_window = window.clone();
+    let focus_weak = app.as_weak();
     let block: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> = RcBlock::new(
         move |event_ptr: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit provides the event pointer for this callback's duration.
@@ -254,6 +430,23 @@ pub fn install(app: &AppWindow) -> Result<ResizeMonitor, String> {
                 return event_ptr.as_ptr();
             }
             let hit = shell_hit(event.locationInWindow(), resize_window.frame().size);
+            if event_type == NSEventType::LeftMouseDown && !matches!(hit, ShellHit::Outside) {
+                // An LSUIElement window can stay visible after another app becomes
+                // active. Only an explicit click may reclaim the keyboard; never
+                // activate it merely because the user switched workspaces.
+                let application = NSApplication::sharedApplication(
+                    MainThreadMarker::new().expect("AppKit events run on the main thread"),
+                );
+                if !application.isActive() || !resize_window.isKeyWindow() {
+                    application.activate();
+                    resize_window.makeKeyWindow();
+                }
+                // Slint's FocusScope can have lost focus even if AppKit still
+                // considers this window key after a workspace transition.
+                if let Some(app) = focus_weak.upgrade() {
+                    app.invoke_refocus_navigation();
+                }
+            }
             if event_type == NSEventType::MouseMoved {
                 if let ShellHit::Resize(edge) = hit {
                     NSCursor::frameResizeCursorFromPosition_inDirections(
@@ -306,12 +499,32 @@ pub fn install(app: &AppWindow) -> Result<ResizeMonitor, String> {
     let token = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) }
         .ok_or("AppKit could not install the resize event monitor")?;
     window.setAcceptsMouseMovedEvents(true);
-    Ok(ResizeMonitor { token })
+    Ok(ResizeMonitor {
+        token,
+        window,
+        settings,
+        timer,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinning_joins_spaces_and_restores_all_original_flags() {
+        use NSWindowCollectionBehavior as B;
+        for original in [
+            B::Default,
+            B::Managed | B::IgnoresCycle | B::FullScreenNone,
+            B::Stationary | B::CanJoinAllSpaces,
+        ] {
+            let pinned = pinned_behavior(original, true);
+            assert!(pinned.contains(B::CanJoinAllSpaces));
+            assert!(pinned.contains(original));
+            assert_eq!(pinned_behavior(original, false), original);
+        }
+    }
 
     #[test]
     fn shell_hit_regions_follow_painted_shapes_at_all_sizes() {
@@ -665,7 +878,7 @@ mod tests {
             },
             NSPoint { x: -500.0, y: 0.0 },
         );
-        assert_eq!(next.size.width, 294.0);
-        assert_eq!(next.size.height, 448.0);
+        assert_eq!(next.size.width, 315.0);
+        assert_eq!(next.size.height, 480.0);
     }
 }

@@ -1,0 +1,102 @@
+// Pause at the start of each lap, then scroll two identical copies left.
+// At the wrap boundary the second copy occupies exactly the first copy's start.
+export component MarqueeLabel inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected: false;
+    in property <float> ui-scale: 1;
+    in property <int> font-size: 18;
+    in property <color> foreground: #202932;
+    in property <bool> centered: false;
+    in property <string> family: "IBM Plex Sans Condensed";
+    in property <int> weight: 700;
+    property <bool> moving: false;
+    // Animate only the forward lap. Animating x in both directions used to
+    // carry the previous lap's negative offset into the next one, then ease
+    // backwards during the pause. Reset progress without animation instead.
+    property <float> progress: root.moving ? 1 : 0;
+    animate progress {
+        enabled: root.moving;
+        duration: (root.period / (1px * root.ui-scale)) * 32ms;
+        easing: linear;
+    }
+    property <bool> overflowed: measure.preferred-width > root.width;
+    property <length> gap: 20px * root.ui-scale;
+    property <length> period: measure.preferred-width + root.gap;
+    changed selected => { root.moving = false; }
+    changed text => { root.moving = false; }
+    changed width => { root.moving = false; }
+    changed ui-scale => { root.moving = false; }
+    changed overflowed => { if !root.overflowed { root.moving = false; } }
+    background: transparent;
+    clip: true;
+    Timer {
+        interval: 3200ms;
+        running: root.selected && root.overflowed && !root.moving;
+        triggered => { root.moving = true; }
+    }
+    // End each lap at the exact point where copy two reaches x=0. The
+    // stationary label matches that copy, so the pause has no visual jump.
+    Timer {
+        interval: (root.period / (1px * root.ui-scale)) * 32ms;
+        running: root.moving;
+        triggered => { root.moving = false; }
+    }
+    // Measure independently to avoid text/parent-width cycles.
+    measure := Text {
+        visible: false;
+        text: root.text;
+        font-family: root.family;
+        font-weight: root.weight;
+        font-size: root.font-size * root.ui-scale * 1px;
+        wrap: no-wrap;
+    }
+    Text {
+        visible: !root.moving;
+        // Pin the glyph origin when selection changes the label's width from
+        // elided to full text. Rectangle child auto-placement otherwise shifts it.
+        x: 0px;
+        y: 0px;
+        width: root.selected && root.overflowed ? measure.preferred-width : root.width;
+        height: root.height;
+        text: root.text;
+        font-family: root.family;
+        font-weight: root.weight;
+        font-size: root.font-size * root.ui-scale * 1px;
+        wrap: no-wrap;
+        overflow: elide;
+        color: root.foreground;
+        horizontal-alignment: root.centered && !root.overflowed ? center : left;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        visible: root.moving;
+        x: -root.progress * root.period;
+        width: 2 * root.period;
+        height: root.height;
+        background: transparent;
+        Text {
+            x: 0px;
+            width: measure.preferred-width;
+            height: parent.height;
+            text: root.text;
+            font-family: root.family;
+            font-weight: root.weight;
+            font-size: root.font-size * root.ui-scale * 1px;
+            wrap: no-wrap;
+            color: root.foreground;
+            vertical-alignment: center;
+        }
+        Text {
+            x: root.period;
+            width: measure.preferred-width;
+            height: parent.height;
+            text: root.text;
+            font-family: root.family;
+            font-weight: root.weight;
+            font-size: root.font-size * root.ui-scale * 1px;
+            wrap: no-wrap;
+            color: root.foreground;
+            vertical-alignment: center;
+        }
+    }
+}

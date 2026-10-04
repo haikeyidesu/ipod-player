@@ -17,13 +17,19 @@ published with personal music artwork.
 ## Features
 
 - Frameless Aqua/glass iPod window, proportional scaling and native macOS resizing.
+- Dockless native window with persistent pinning/geometry, Reset Window Size and a faint LCD texture;
+  [window preferences and verification](docs/WINDOW.md).
 - Click-wheel, keyboard and mouse navigation; classic Now Playing artwork/progress.
 - Browse MPD artists, albums, songs, saved playlists and indexed folders.
 - Collection Play/Shuffle replaces the queue; Play Next/Add to Queue preserve it.
 - Song actions include adding to existing saved MPD playlists.
 - Clear Queue preserves the current song; stable queue IDs back queue actions.
-- Direct wheel/bar scrubbing, restart/previous/next controls and Vim-style navigation.
-- Settings for MPD mixer volume, crossfade, repeat and random mode.
+- Direct five-second seeking, draggable progress bar and consistent Vim-style controls.
+- Vertical Now Playing/Lyrics carousel with synced LRCLIB lyrics, plain fallback
+  and a persistent offline cache; [lyrics behavior and privacy](docs/LYRICS.md).
+- Single-click row selection; unified double-click, Enter/l/Right and centre activation.
+- Selectable/draggable MPD mixer-volume slider, global `,`/`.` volume shortcuts,
+  crossfade, repeat and random mode (never macOS system volume).
 - macOS Now Playing / Control Center metadata and transport, synchronized with MPD
   (including external changes from rmpc).
 
@@ -60,9 +66,11 @@ MACOSX_DEPLOYMENT_TARGET=12.0 cargo build --release --locked
 python3 scripts/bundle-macos.py
 ```
 
-The one-command future bundle build is **`python3 scripts/bundle-macos.py`**. It
+The one-command bundle build is **`python3 scripts/bundle-macos.py`**. It
 runs the release build itself, embeds UI/fonts/static resources, adds metadata and
 licenses, validates dependencies and applies an **ad-hoc signature for local use**.
+It also copies the verified bundle to **`/Applications/iPod Player.app`**.
+Use `--no-install` to build and verify without replacing the installed application.
 It does not install additional tools, mutate MPD or push Git commits.
 The script resolves the repository path from its own location, so it also works
 when called from another working directory.
@@ -88,17 +96,17 @@ No final icon is supplied yet; the generic macOS icon is expected.
 
 ## Install and launch locally
 
-Quit any `cargo run` instance first, so two processes do not compete for Control
-Center ownership. Copy the bundle to a location you own:
+Quit the running app **before rebuilding**, so the script can safely replace its
+installed copy and two processes do not compete for Control Center ownership.
+The build installs the app automatically in the system `/Applications` folder (write permission required);
+previous installed copies are preserved as timestamped `.previous-*` siblings:
 
 ```sh
-mkdir -p "$HOME/Applications"
-ditto "target/bundle/macos/iPod Player.app" "$HOME/Applications/iPod Player.app"
-cd /tmp
-open "$HOME/Applications/iPod Player.app"
+python3 scripts/bundle-macos.py
+open "/Applications/iPod Player.app"
 ```
 
-You can also double-click the copied app in Finder. Cargo, Terminal, source files
+You can also double-click the installed app in Finder. Cargo, Terminal, source files
 and local font files are **not needed at runtime**. Gatekeeper may warn for builds
 downloaded from the internet until Developer ID signing/notarization is completed;
 ad-hoc signing is not a public distribution identity. Use normal macOS security
@@ -140,7 +148,7 @@ unavailable the window still opens; metadata clears and library queries show an
 error. For diagnostics, run the copied executable directly from a terminal:
 
 ```sh
-"$HOME/Applications/iPod Player.app/Contents/MacOS/ipod-player"
+"/Applications/iPod Player.app/Contents/MacOS/ipod-player"
 ```
 
 ## Release verification and distribution

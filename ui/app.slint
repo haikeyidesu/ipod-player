@@ -2,9 +2,35 @@ import "../assets/fonts/IBM_Plex_Sans_Condensed/IBMPlexSansCondensed-Bold.ttf";
 import "../assets/fonts/Symbols_Nerd_Font_Mono/SymbolsNerdFontMono-Regular.ttf";
 import { ClickWheel } from "click-wheel.slint";
 import { NowPlayingPanel } from "now-playing.slint";
+import { LyricsPanel } from "lyrics.slint";
+import { VolumeSlider } from "volume-slider.slint";
+import { MarqueeLabel } from "marquee-label.slint";
+import { LcdTexture } from "lcd-texture.slint";
+import { StatusStrip } from "status-strip.slint";
 
 // The display owns its menu selection; it does not know about the wheel yet.
 component DisplayPanel inherits Rectangle {
+    callback menu-wheel(length);
+    in property <string> status-message;
+    in property <bool> status-showing;
+    in property <string> lyrics-prefix;
+    out property <int> lyrics-active-position: lyrics.active-scroll;
+    out property <int> lyrics-scroll-max: lyrics.max-scroll;
+    in property <string> lyrics-transcript;
+    in property <bool> lyrics-manual;
+    in property <bool> volume-page;
+    in property <int> displayed-volume;
+    callback set-volume(int);
+    callback volume-step(int);
+    in property <bool> carousel-mode;
+    in property <int> carousel-page;
+    in property <[string]> lyrics-lines;
+    in property <int> lyrics-active;
+    in property <string> lyrics-plain;
+    in property <string> lyrics-message;
+    in property <int> lyrics-scroll;
+    callback select-item();
+    callback scroll-step(int);
     in property <string> queue-label;
     in property <bool> scrubbing;
     in property <bool> can-seek;
@@ -59,23 +85,16 @@ component DisplayPanel inherits Rectangle {
             y: 0px;
             width: parent.width;
             height: 34px * root.ui-scale;
-            background: @linear-gradient(180deg,
-                #f9fdff 0%, #e8f4fa 16%, #dceaf4 52%, #bdd4e3 100%);
+            background: @linear-gradient(180deg, #ffffff 0%, #eaf6fd 15%, #daeaf5 55%, #f9fcfe 100%);
 
             Rectangle {
                 width: parent.width;
                 height: 6px * root.ui-scale;
                 background: @linear-gradient(180deg, #ffffff8a 0%, #ffffff00 100%);
             }
-            Rectangle {
-                y: parent.height - 2px * root.ui-scale;
-                width: parent.width;
-                height: 2px * root.ui-scale;
-                background: @linear-gradient(180deg, #738fa944 0%, #52738b70 100%);
-            }
 
             Text {
-                text: root.page-title == "" ? "iPod" : root.page-title;
+                text: root.page-title == "" ? "iPod" : root.page-title == "Now Playing" && root.carousel-page == 1 ? "Lyrics" : root.page-title;
                 x: 52px * root.ui-scale;
                 width: parent.width - 104px * root.ui-scale;
                 overflow: elide;
@@ -107,6 +126,7 @@ component DisplayPanel inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
+
             Rectangle {
                 x: parent.width - 36px * root.ui-scale;
                 y: 11px * root.ui-scale;
@@ -122,6 +142,7 @@ component DisplayPanel inherits Rectangle {
                     height: 8px * root.ui-scale;
                     background: root.battery-level <= 20 ? #c74438 : #45a659;
                 }
+
                 Text {
                     width: parent.width;
                     height: parent.height;
@@ -143,7 +164,7 @@ component DisplayPanel inherits Rectangle {
         }
 
         // One template for all six compact rows.
-        if root.page-title == "" || root.browse-active: VerticalLayout {
+        if !root.volume-page && (root.page-title == "" || root.browse-active): VerticalLayout {
             x: 0px;
             y: header.y + header.height;
             width: parent.width;
@@ -163,17 +184,14 @@ component DisplayPanel inherits Rectangle {
                     background: root.selected-index == index ? #0e498b75 : #849baa25;
                 }
 
-                Text {
+                MarqueeLabel {
                     x: (root.browse-active && root.browser-queue-positions[index] >= 0 ? 28px : 12px) * root.ui-scale;
                     width: parent.width - self.x - 38px * root.ui-scale;
                     height: parent.height;
                     text: label;
-                    wrap: no-wrap;
-                    overflow: elide;
-                    vertical-alignment: center;
-                    font-size: 18px * root.ui-scale;
-                    // Selection changes colors only; all rows inherit the bold font.
-                    color: root.selected-index == index ? white : #202932;
+                    selected: root.selected-index == index;
+                    ui-scale: root.ui-scale;
+                    foreground: root.selected-index == index ? white : #202932;
                 }
 
                 Text {
@@ -186,6 +204,7 @@ component DisplayPanel inherits Rectangle {
                     font-size: 12px * root.ui-scale;
                     color: root.selected-index == index ? white : #28753a;
                 }
+
                 Text {
                     x: parent.width - 26px * root.ui-scale;
                     width: 16px * root.ui-scale;
@@ -205,24 +224,112 @@ component DisplayPanel inherits Rectangle {
                         root.selected-index = index;
                         root.request-navigation-focus();
                     }
+                    double-clicked => {
+                        root.selected-index = index;
+                        root.request-navigation-focus();
+                        root.select-item();
+                    }
+                    scroll-event(event) => {
+                        if event.delta-y != 0px {
+                            root.request-navigation-focus();
+                            root.menu-wheel(event.delta-y);
+                            return accept;
+                        }
+                        return reject;
+                    }
                 }
             }
         }
     }
-    if root.page-title == "Now Playing" && !root.browse-active: NowPlayingPanel {
-        queue-label: root.queue-label; scrubbing: root.scrubbing; can-seek: root.can-seek;
-        scrub-begin(fraction) => { root.scrub-begin(fraction); }
-        scrub-move(fraction) => { root.scrub-move(fraction); }
-        scrub-end => { root.scrub-end(); }
-        scrub-abort => { root.scrub-abort(); }
-        x: 19px * root.ui-scale; y: 61px * root.ui-scale;
+
+    if root.volume-page: VolumeSlider {
+        x: 14px * root.ui-scale;
+        y: 58px * root.ui-scale;
+        width: parent.width - 28px * root.ui-scale;
+        height: 195px * root.ui-scale;
+        ui-scale: root.ui-scale;
+        volume: root.displayed-volume;
+        set-volume(value) => { root.set-volume(value); }
+        step(delta) => { root.volume-step(delta); }
+        request-focus => { root.request-navigation-focus(); }
+    }
+
+    Rectangle {
+        visible: root.page-title == "Now Playing" && !root.browse-active;
+        x: 19px * root.ui-scale;
+        y: 61px * root.ui-scale;
         width: parent.width - 38px * root.ui-scale;
         height: 208px * root.ui-scale;
-        ui-scale: root.ui-scale;
-        artwork: root.player-art; has-art: root.player-has-art;
-        title: root.player-title; artist: root.player-artist; album: root.player-album;
-        elapsed: root.player-elapsed; duration: root.player-duration;
-        elapsed-label: root.player-elapsed-label; remaining-label: root.player-remaining-label;
+        clip: true;
+        Rectangle {
+            width: parent.width;
+            height: parent.height * 2;
+            y: -root.carousel-page * 208px * root.ui-scale;
+            animate y {
+                duration: 220ms;
+                easing: ease-in-out;
+            }
+            NowPlayingPanel {
+                activate => { root.select-item(); }
+                request-focus => { root.request-navigation-focus(); }
+                scroll-step(delta) => { root.scroll-step(delta); }
+                queue-label: root.queue-label;
+                scrubbing: root.scrubbing;
+                can-seek: root.can-seek;
+                scrub-begin(fraction) => { root.scrub-begin(fraction); }
+                scrub-move(fraction) => { root.scrub-move(fraction); }
+                scrub-end => { root.scrub-end(); }
+                scrub-abort => { root.scrub-abort(); }
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: 208px * root.ui-scale;
+                ui-scale: root.ui-scale;
+                artwork: root.player-art;
+                has-art: root.player-has-art;
+                title: root.player-title;
+                artist: root.player-artist;
+                album: root.player-album;
+                elapsed: root.player-elapsed;
+                duration: root.player-duration;
+                elapsed-label: root.player-elapsed-label;
+                remaining-label: root.player-remaining-label;
+            }
+
+            lyrics := LyricsPanel {
+                y: 208px * root.ui-scale;
+                width: parent.width;
+                height: 208px * root.ui-scale;
+                ui-scale: root.ui-scale;
+                title: root.player-title;
+                artist: root.player-artist;
+                lines: root.lyrics-lines;
+                active: root.lyrics-active;
+                plain: root.lyrics-plain;
+                transcript: root.lyrics-transcript;
+                prefix: root.lyrics-prefix;
+                manual: root.lyrics-manual;
+                message: root.lyrics-message;
+                scroll: root.lyrics-scroll;
+                scroll-step(delta) => { root.scroll-step(delta); }
+                activate => { root.select-item(); }
+                request-focus => { root.request-navigation-focus(); }
+            }
+        }
+    }
+
+    if root.page-title == "Now Playing" && !root.browse-active: Text {
+        x: 19px * root.ui-scale;
+        y: 273px * root.ui-scale;
+        width: parent.width - 38px * root.ui-scale;
+        height: 15px * root.ui-scale;
+        font-size: 11px * root.ui-scale;
+        color: #526775;
+        horizontal-alignment: center;
+        text: !root.carousel-mode ? "Select / double-click for Lyrics"
+            : root.carousel-page == 0 ? "↓ Lyrics · MENU exits"
+            : root.lyrics-manual ? (root.lyrics-plain != "" ? "Browsing · Select to finish" : "Browsing · Select to sync") : root.lyrics-plain != "" ? "Select to browse · MENU returns"
+            : root.lyrics-lines.length > 0 ? "Select to browse · MENU returns" : "LRCLIB · MENU returns";
     }
     if root.browse-active && root.browser-items.length == 0: Text {
         x: 19px * root.ui-scale;
@@ -235,6 +342,14 @@ component DisplayPanel inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         wrap: word-wrap;
+    }
+
+    LcdTexture {
+        x: 7px * root.ui-scale;
+        y: 7px * root.ui-scale;
+        width: parent.width - 14px * root.ui-scale;
+        height: parent.height - 14px * root.ui-scale;
+        ui-scale: root.ui-scale;
     }
 
     // Passive glass pane over *all* LCD content, including Now Playing text.
@@ -253,9 +368,9 @@ component DisplayPanel inherits Rectangle {
         Rectangle {
             width: parent.width;
             height: parent.height;
-            background: @linear-gradient(150deg,
-                #ffffff1b 0%, #ffffff11 24%, #ffffff06 49%, #ffffff00 78%);
+            background: @linear-gradient(150deg, #ffffff1b 0%, #ffffff11 24%, #ffffff06 49%, #ffffff00 78%);
         }
+
         Rectangle {
             x: -115px * root.ui-scale;
             y: -130px * root.ui-scale;
@@ -264,23 +379,19 @@ component DisplayPanel inherits Rectangle {
             border-radius: self.width / 2;
             background: @radial-gradient(circle, #ffffff1c 0%, #ffffff0a 38%, #ffffff00 100%);
         }
+
         Rectangle {
             width: parent.width;
             height: 9px * root.ui-scale;
             background: @linear-gradient(180deg, #ffffff29 0%, #ffffff00 100%);
         }
-        // LCD recess below the header and a faint opposite-side glass falloff.
-        Rectangle {
-            y: 34px * root.ui-scale;
-            width: parent.width;
-            height: 5px * root.ui-scale;
-            background: @linear-gradient(180deg, #536f8223 0%, #536f8200 100%);
-        }
+        // A faint opposite-side glass falloff, without a header seam.
         Rectangle {
             width: parent.width;
             height: parent.height;
             background: @linear-gradient(90deg, #23364200 0%, #23364200 67%, #2336420b 100%);
         }
+
         Rectangle {
             x: 1px * root.ui-scale;
             y: 1px * root.ui-scale;
@@ -290,6 +401,16 @@ component DisplayPanel inherits Rectangle {
             border-width: 1px * root.ui-scale;
             border-color: #7993a020;
             background: transparent;
+        }
+
+        // Temporary in-screen footer, clipped by the existing LCD glass.
+        StatusStrip {
+            y: parent.height - self.height;
+            width: parent.width;
+            height: 20px * root.ui-scale;
+            ui-scale: root.ui-scale;
+            message: root.status-message;
+            showing: root.status-showing;
         }
     }
     // A narrow glass catchlight just inside the darker screen bezel.
@@ -307,6 +428,25 @@ component DisplayPanel inherits Rectangle {
 
 // The body arranges the screen above the wheel, with room for later materials/shadows.
 component DeviceShell inherits Rectangle {
+    callback menu-wheel(length);
+    in property <string> status-message;
+    in property <bool> status-showing;
+    in property <string> lyrics-prefix;
+    out property <int> lyrics-active-position: display.lyrics-active-position;
+    out property <int> lyrics-scroll-max: display.lyrics-scroll-max;
+    in property <string> lyrics-transcript;
+    in property <bool> lyrics-manual;
+    in property <bool> volume-page;
+    in property <int> displayed-volume;
+    callback set-volume(int);
+    callback volume-step(int);
+    in property <bool> carousel-mode;
+    in property <int> carousel-page;
+    in property <[string]> lyrics-lines;
+    in property <int> lyrics-active;
+    in property <string> lyrics-plain;
+    in property <string> lyrics-message;
+    in property <int> lyrics-scroll;
     in property <string> queue-label;
     in property <bool> scrubbing;
     in property <bool> can-seek;
@@ -352,9 +492,7 @@ component DeviceShell inherits Rectangle {
     in property <bool> play-pressed: false;
     in property <bool> center-pressed: false;
 
-    background: @linear-gradient(108deg,
-        #bec8d0 0%, #eaf0f4 5%, #f8fafb 14%, #eff3f5 30%,
-        #e9ebed 53%, #dce2e7 75%, #cad2da 91%, #b9c2cb 100%);
+    background: @linear-gradient(108deg, #bec8d0 0%, #eaf0f4 5%, #f8fafb 14%, #eff3f5 30%, #e9ebed 53%, #dce2e7 75%, #cad2da 91%, #b9c2cb 100%);
     border-radius: 32px * root.ui-scale;
     border-width: 4px * root.ui-scale;
     border-color: #aeb4ba;
@@ -368,14 +506,34 @@ component DeviceShell inherits Rectangle {
         height: parent.height - 10px * root.ui-scale;
         border-radius: 28px * root.ui-scale;
         border-width: 2px * root.ui-scale;
-        border-color: @linear-gradient(145deg,
-            #ffffff88 0%, #ffffff38 28%, #8796a41e 68%, #5262723b 100%);
+        border-color: @linear-gradient(145deg, #ffffff88 0%, #ffffff38 28%, #8796a41e 68%, #5262723b 100%);
         background: transparent;
     }
     // The darker opposite edge is carried by the broad shell gradient.
 
     display := DisplayPanel {
-        queue-label: root.queue-label; scrubbing: root.scrubbing; can-seek: root.can-seek;
+        status-message: root.status-message;
+        status-showing: root.status-showing;
+        lyrics-prefix: root.lyrics-prefix;
+        lyrics-transcript: root.lyrics-transcript;
+        lyrics-manual: root.lyrics-manual;
+        volume-page: root.volume-page;
+        displayed-volume: root.displayed-volume;
+        set-volume(value) => { root.set-volume(value); }
+        volume-step(delta) => { root.volume-step(delta); }
+        carousel-mode: root.carousel-mode;
+        carousel-page: root.carousel-page;
+        lyrics-lines: root.lyrics-lines;
+        lyrics-active: root.lyrics-active;
+        lyrics-plain: root.lyrics-plain;
+        lyrics-message: root.lyrics-message;
+        lyrics-scroll: root.lyrics-scroll;
+        select-item => { root.select-item(); }
+        scroll-step(delta) => { root.scroll-step(delta); }
+        menu-wheel(delta) => { root.menu-wheel(delta); }
+        queue-label: root.queue-label;
+        scrubbing: root.scrubbing;
+        can-seek: root.can-seek;
         scrub-begin(fraction) => { root.request-navigation-focus(); root.scrub-begin(fraction); }
         scrub-move(fraction) => { root.scrub-move(fraction); }
         scrub-end => { root.scrub-end(); }
@@ -478,12 +636,39 @@ component DeviceShell inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    preferred-width: 357px;
-    preferred-height: 544px;
-    min-width: 294px;
-    min-height: 448px;
-    max-width: 504px;
-    max-height: 768px;
+    callback refocus-navigation();
+    callback show-status(string);
+    out property <string> status-message: "";
+    out property <bool> status-showing: false;
+    in-out property <bool> window-pinned: false;
+    callback window-pin-requested();
+    callback window-reset-requested();
+    in-out property <bool> volume-page: false;
+    in-out property <int> volume-target: -1;
+    property <int> displayed-volume: root.volume-target >= 0 ? root.volume-target : root.player-volume;
+    callback volume-requested(int);
+    callback volume-completed(int, int);
+    in-out property <bool> carousel-mode: false;
+    in-out property <int> carousel-page: 0;
+    changed carousel-page => { if root.carousel-page != 1 { root.lyrics-manual = false; } }
+    in-out property <[string]> lyrics-lines;
+    in-out property <int> lyrics-active: -1;
+    in-out property <string> lyrics-plain;
+    in-out property <string> lyrics-transcript;
+    in-out property <string> lyrics-prefix;
+    out property <int> lyrics-active-position: shell.lyrics-active-position;
+    in-out property <bool> lyrics-manual: false;
+    in-out property <string> lyrics-message: "No lyrics available";
+    in-out property <int> lyrics-scroll: 0;
+    out property <int> lyrics-scroll-max: shell.lyrics-scroll-max;
+    callback lyrics-delivered(string, string);
+    callback refresh-lyrics();
+    preferred-width: 420px;
+    preferred-height: 640px;
+    min-width: 315px;
+    min-height: 480px;
+    max-width: 630px;
+    max-height: 960px;
     no-frame: true;
     // macOS owns hit testing; disable winit's unsupported macOS resize path.
     resize-border-width: 0px;
@@ -520,6 +705,24 @@ export component AppWindow inherits Window {
     property <float> ui-scale: 0.98 * min(root.width / 420px, root.height / 640px);
 
     in-out property <int> selected-index: 0;
+    property <length> menu-wheel-remainder: 0px;
+    wheel-reset := Timer {
+        interval: 350ms;
+        running: false;
+        triggered => { root.menu-wheel-remainder = 0px; self.stop(); }
+    }
+    status-dismiss := Timer {
+        interval: 1800ms;
+        running: false;
+        triggered => { root.status-showing = false; self.stop(); }
+    }
+    show-status(message) => {
+        if root.status-showing { status-dismiss.restart(); }
+        else { status-dismiss.start(); }
+        root.status-message = message;
+        root.status-showing = true;
+    }
+
     in-out property <bool> menu-pressed: false;
     in-out property <bool> prev-pressed: false;
     in-out property <bool> next-pressed: false;
@@ -531,7 +734,7 @@ export component AppWindow inherits Window {
     in-out property <bool> scrubbing: false;
     in-out property <float> scrub-position: 0;
     property <string> scrub-song-id: "";
-    property <bool> wheel-seeking: false;
+    // Pointer dragging is the only scrub mode; ordinary j/k seeks immediately.
     property <bool> can-seek: root.page-title == "Now Playing" && !root.browse-active
         && root.player-duration > 0 && root.player-song-id != ""
         && (root.player-playing || root.player-paused);
@@ -552,27 +755,27 @@ export component AppWindow inherits Window {
         }
         root.scrubbing = false;
     }
-    function wheel-step(delta: int) {
-        if root.can-seek {
-            if !root.wheel-seeking {
-                if !root.scrubbing { root.begin-scrub(); }
-                root.wheel-seeking = true;
-            }
-            // After cancellation or a track change, ignore the rest of this drag.
-            if root.scrubbing { root.move-selection(delta); }
-        } else if !root.wheel-seeking { root.move-selection(delta); }
-    }
-    function wheel-finish(cancelled: bool) {
-        if root.wheel-seeking {
-            if cancelled { root.scrubbing = false; } else { root.commit-scrub(); }
+    function change-volume(delta: int) {
+        if root.player-volume >= 0 {
+            let value = max(0, min(100, root.displayed-volume + delta * 5));
+            if value != root.displayed-volume { root.volume-requested(value); }
         }
-        root.wheel-seeking = false;
+    }
+    function set-volume(value: int) {
+        if root.player-volume >= 0 && value != root.displayed-volume {
+            root.volume-requested(max(0, min(100, value)));
+        }
+    }
+    function seek-step(delta: int) {
+        if root.can-seek && !root.scrubbing {
+            root.player-elapsed = max(0, min(root.player-duration, root.player-elapsed + delta * root.seek-interval-seconds));
+            root.seek-requested(root.player-song-id, root.player-elapsed);
+            root.refresh-lyrics();
+        }
     }
     function dispatch-transport(action: string) {
-        if root.scrubbing && (action == "previous" || action == "next") {
-            root.move-selection(action == "previous" ? -1 : 1);
-        } else if action == "play-pause" && root.scrubbing { root.commit-scrub(); }
-        else { root.transport-action(action); }
+        root.scrubbing = false;
+        root.transport-action(action);
     }
     function preview-at(fraction: float) {
         if root.scrubbing { root.scrub-position = max(0, min(1, fraction)) * root.player-duration; }
@@ -595,6 +798,14 @@ export component AppWindow inherits Window {
     // Rust supplies and paginates the home menu through the same browser model.
     property <[string]> menu-items: [];
     in-out property <string> page-title: "";
+    changed page-title => {
+        root.carousel-mode = false;
+        root.carousel-page = 0;
+        root.scrubbing = false;
+        root.lyrics-manual = false;
+        root.menu-wheel-remainder = 0px;
+        wheel-reset.stop();
+    }
     in-out property <bool> browse-active: false;
     in-out property <string> browse-message: "";
     in-out property <[string]> browser-items: [];
@@ -605,29 +816,67 @@ export component AppWindow inherits Window {
     forward-focus: navigation;
     init => { navigation.focus(); }
 
-    property <int> last-step: 0;
+    function scroll-menu-wheel(delta: length) {
+        // Accumulate fine trackpad deltas; cap a single hardware notch to one
+        // row. Only menus use this: Lyrics and the carousel keep their inputs.
+        // The platform delta already reflects macOS's Scroll direction setting.
+        let tick = max(-48px, min(48px, delta));
+        if tick == 0px { return; }
+        wheel-reset.stop();
+        wheel-reset.start();
+        if (root.menu-wheel-remainder > 0px && tick < 0px)
+            || (root.menu-wheel-remainder < 0px && tick > 0px) {
+            root.menu-wheel-remainder = 0px;
+        }
+        root.menu-wheel-remainder += tick;
+        if abs(root.menu-wheel-remainder) >= 48px {
+            root.menu-wheel-remainder -= root.menu-wheel-remainder > 0px ? 48px : -48px;
+            root.move-selection(tick > 0px ? 1 : -1);
+        }
+    }
     function move-selection(delta: int) {
-        if root.scrubbing {
-            root.scrub-position = max(0, min(root.player-duration, root.scrub-position + delta * root.seek-interval-seconds));
+        if root.volume-page {
+            root.change-volume(delta);
+        } else if root.page-title == "Now Playing" && !root.browse-active {
+            if root.carousel-mode {
+                if root.carousel-page == 1 && root.lyrics-manual {
+                    root.lyrics-scroll = max(0, min(root.lyrics-scroll-max, root.lyrics-scroll + delta * 24));
+                } else {
+                    root.carousel-page = max(0, min(1, root.carousel-page + delta));
+                }
+            } else { root.seek-step(delta); }
         } else if root.browse-active {
-            root.last-step = delta;
             root.browse-step(delta);
         } else if root.page-title == "" {
-            root.selected-index = max(0, min(root.menu-items.length - 1, root.selected-index + delta));
-            root.last-step = delta;
+            root.browse-step(delta);
         }
     }
     function open-selected() {
         if root.page-title == "Now Playing" && !root.browse-active {
-            if root.scrubbing { root.commit-scrub(); } else { root.begin-scrub(); }
+            root.scrubbing = false;
+            if root.carousel-page == 1 && (root.lyrics-plain != "" || root.lyrics-lines.length > 0) {
+                root.lyrics-manual = !root.lyrics-manual;
+                if root.lyrics-plain == "" {
+                    root.lyrics-scroll = root.lyrics-manual
+                        ? max(0, min(root.lyrics-scroll-max, root.lyrics-active-position)) : 0;
+                }
+            } else { root.carousel-mode = true; }
         } else if root.page-title == "" || root.browse-active {
             root.browse-open(root.selected-index);
         }
     }
     function back() {
-        if root.scrubbing { root.scrubbing = false; } else { root.browse-back(); }
+        if root.scrubbing { root.scrubbing = false; }
+        else if root.lyrics-manual {
+            root.lyrics-manual = false;
+            if root.lyrics-plain == "" { root.lyrics-scroll = 0; }
+        }
+        else if root.carousel-page == 1 { root.carousel-page = 0; }
+        else if root.carousel-mode { root.carousel-mode = false; }
+        else { root.browse-back(); }
     }
 
+    refocus-navigation => { navigation.focus(); }
     navigation := FocusScope {
         key-pressed(event) => {
             // Leave macOS shortcuts (Cmd, Ctrl, Option) untouched.
@@ -636,35 +885,23 @@ export component AppWindow inherits Window {
             }
             // Vim-style navigation keys
             if event.text == "j" || event.text == Key.DownArrow {
-                root.move-selection(root.scrubbing ? -1 : 1);
+                root.move-selection(event.text == "j" && (root.volume-page
+                    || (root.page-title == "Now Playing" && !root.browse-active && !root.carousel-mode)) ? -1 : 1);
             } else if event.text == "k" || event.text == Key.UpArrow {
-                root.move-selection(root.scrubbing ? 1 : -1);
+                root.move-selection(event.text == "k" && (root.volume-page
+                    || (root.page-title == "Now Playing" && !root.browse-active && !root.carousel-mode)) ? 1 : -1);
             } else if event.text == "g" || event.text == "G" {
                 if root.browse-active { root.browse-jump(event.text == "G"); }
-            } else if event.text == Key.Return {
+            } else if event.text == Key.Return || event.text == "l" || event.text == Key.RightArrow {
                 if !root.center-pressed { root.open-selected(); }
                 root.center-pressed = true;
-            } else if event.text == "l" || event.text == Key.RightArrow {
-                if root.page-title == "Now Playing" && !root.browse-active {
-                    if !root.next-pressed || root.scrubbing { root.dispatch-transport("next"); }
-                    root.next-pressed = true;
-                } else {
-                    if !root.center-pressed { root.open-selected(); }
-                    root.center-pressed = true;
-                }
-            } else if event.text == "h" || event.text == Key.LeftArrow {
-                if root.page-title == "Now Playing" && !root.browse-active {
-                    if !root.prev-pressed || root.scrubbing { root.dispatch-transport("previous"); }
-                    root.prev-pressed = true;
-                } else {
-                    if !root.menu-pressed { root.back(); }
-                    root.menu-pressed = true;
-                }
-            } else if event.text == Key.Escape {
+            } else if event.text == "h" || event.text == Key.LeftArrow || event.text == Key.Escape {
                 if !root.menu-pressed { root.back(); }
                 root.menu-pressed = true;
+            } else if event.text == "," {
+                root.change-volume(-1);
             } else if event.text == "." {
-                if root.last-step != 0 { root.move-selection(root.last-step); }
+                root.change-volume(1);
             } else if event.text == "[" {
                 if !root.prev-pressed { root.dispatch-transport("previous"); }
                 root.prev-pressed = true;
@@ -718,54 +955,91 @@ export component AppWindow inherits Window {
 
         // Keep the sole keyboard handler above every screen and mouse target.
         shell := DeviceShell {
-        queue-label: root.player-queue-position >= 0 && root.player-queue-position < root.player-queue-length
-            ? (root.player-queue-position + 1) + " of " + root.player-queue-length : "";
-        scrubbing: root.scrubbing; can-seek: root.can-seek;
-        scrub-begin(fraction) => { navigation.focus(); root.begin-scrub(); root.preview-at(fraction); }
-        scrub-move(fraction) => { root.preview-at(fraction); }
-        scrub-end => { root.commit-scrub(); }
-        scrub-abort => { root.scrubbing = false; }
-        player-art: root.player-art;
-        player-has-art: root.player-has-art;
-        player-elapsed: root.scrubbing ? root.scrub-position : root.player-elapsed;
-        player-duration: root.player-duration;
-        player-elapsed-label: root.scrubbing ? root.time-text(root.scrub-position) : root.player-elapsed-label;
-        player-remaining-label: root.scrubbing ? "-" + root.time-text(root.player-duration - root.scrub-position) : root.player-remaining-label;
-        browser-songs: root.browser-songs;
-        width: 420px * root.ui-scale;
-        height: 640px * root.ui-scale;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        menu-items: root.menu-items;
-        browser-items: root.browser-items;
-        browser-leaves: root.browser-leaves;
-        browser-shuffles: root.browser-shuffles;
-        browser-queue-positions: root.browser-queue-positions;
-        player-queue-position: root.player-queue-position;
-        browse-active: root.browse-active;
-        browse-message: root.browse-message;
-        page-title: root.page-title;
-        player-title: root.player-title;
-        player-artist: root.player-artist;
-        player-album: root.player-album;
-        player-playing: root.player-playing;
-        player-paused: root.player-paused;
-        request-navigation-focus => { navigation.focus(); }
-        select-item => { navigation.focus(); root.open-selected(); }
-        go-back => { navigation.focus(); root.back(); }
-        scroll-start => { navigation.focus(); root.wheel-seeking = false; }
-        scroll-step(delta) => { navigation.focus(); root.wheel-step(delta); }
-        scroll-finish(cancelled) => { root.wheel-finish(cancelled); }
-        transport(action) => { navigation.focus(); root.dispatch-transport(action); }
-        ui-scale: root.ui-scale;
-        battery-level: root.battery-level;
-        battery-charging: root.battery-charging;
-        selected-index <=> root.selected-index;
-        menu-pressed: root.menu-pressed;
-        prev-pressed: root.prev-pressed;
-        next-pressed: root.next-pressed;
-        play-pressed: root.play-pressed;
-        center-pressed: root.center-pressed;
+            status-message: root.status-message;
+            status-showing: root.status-showing;
+            lyrics-prefix: root.lyrics-prefix;
+            volume-page: root.volume-page;
+            displayed-volume: root.displayed-volume;
+            set-volume(value) => { navigation.focus(); root.set-volume(value); }
+            volume-step(delta) => { navigation.focus(); root.change-volume(delta); }
+            carousel-mode: root.carousel-mode;
+            carousel-page: root.carousel-page;
+            lyrics-lines: root.lyrics-lines;
+            lyrics-active: root.lyrics-active;
+            lyrics-plain: root.lyrics-plain;
+            lyrics-transcript: root.lyrics-transcript;
+            lyrics-manual: root.lyrics-manual;
+            lyrics-message: root.lyrics-message;
+            lyrics-scroll: root.lyrics-scroll;
+            queue-label: root.player-queue-position >= 0 && root.player-queue-position < root.player-queue-length
+                ? (root.player-queue-position + 1) + " of " + root.player-queue-length : "";
+            scrubbing: root.scrubbing;
+            can-seek: root.can-seek;
+            scrub-begin(fraction) => { navigation.focus(); root.begin-scrub(); root.preview-at(fraction); }
+            scrub-move(fraction) => { root.preview-at(fraction); }
+            scrub-end => { root.commit-scrub(); }
+            scrub-abort => { root.scrubbing = false; }
+            player-art: root.player-art;
+            player-has-art: root.player-has-art;
+            player-elapsed: root.scrubbing ? root.scrub-position : root.player-elapsed;
+            player-duration: root.player-duration;
+            player-elapsed-label: root.scrubbing ? root.time-text(root.scrub-position) : root.player-elapsed-label;
+            player-remaining-label: root.scrubbing ? "-" + root.time-text(root.player-duration - root.scrub-position) : root.player-remaining-label;
+            browser-songs: root.browser-songs;
+            width: 420px * root.ui-scale;
+            height: 640px * root.ui-scale;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            menu-items: root.menu-items;
+            browser-items: root.browser-items;
+            browser-leaves: root.browser-leaves;
+            browser-shuffles: root.browser-shuffles;
+            browser-queue-positions: root.browser-queue-positions;
+            player-queue-position: root.player-queue-position;
+            browse-active: root.browse-active;
+            browse-message: root.browse-message;
+            page-title: root.page-title;
+            player-title: root.player-title;
+            player-artist: root.player-artist;
+            player-album: root.player-album;
+            player-playing: root.player-playing;
+            player-paused: root.player-paused;
+            request-navigation-focus => { navigation.focus(); }
+            select-item => { navigation.focus(); root.open-selected(); }
+            go-back => { navigation.focus(); root.back(); }
+            scroll-start => { navigation.focus(); }
+            scroll-step(delta) => { navigation.focus(); root.move-selection(delta); }
+            menu-wheel(delta) => { navigation.focus(); root.scroll-menu-wheel(delta); }
+            scroll-finish(cancelled) => {}
+            transport(action) => { navigation.focus(); root.dispatch-transport(action); }
+            ui-scale: root.ui-scale;
+            battery-level: root.battery-level;
+            battery-charging: root.battery-charging;
+            selected-index <=> root.selected-index;
+            menu-pressed: root.menu-pressed;
+            prev-pressed: root.prev-pressed;
+            next-pressed: root.next-pressed;
+            play-pressed: root.play-pressed;
+            center-pressed: root.center-pressed;
+        }
+
+        // Passive 2x clear-coat, drawn in the same 420x640 coordinates as the
+        // shell. Its wheel pixels are fully transparent; it never takes input.
+        Rectangle {
+            x: shell.x;
+            y: shell.y;
+            width: shell.width;
+            height: shell.height;
+            border-radius: 32px * root.ui-scale;
+            clip: true;
+            background: transparent;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: @image-url("../assets/gloss/reflection-overlay.png");
+                image-fit: contain;
+                opacity: 1;
+            }
         }
     }
 }

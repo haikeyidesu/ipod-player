@@ -1,0 +1,34 @@
+// Passive, in-shell acknowledgement strip; the parent owns its dismissal timer.
+export component StatusStrip inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <string> message;
+    in property <bool> showing: false;
+    background: transparent;
+    clip: true;
+    opacity: root.showing ? 1 : 0;
+    animate opacity { duration: 170ms; }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        y: root.showing ? 0px : 2px * root.ui-scale;
+        background: @linear-gradient(180deg, #eaf4f9 0%, #e0eff7 100%);
+        animate y { duration: 170ms; }
+        Rectangle {
+            width: parent.width;
+            height: 1px * root.ui-scale;
+            background: #8099a650;
+        }
+        Text {
+            x: 4px * root.ui-scale;
+            width: parent.width - 8px * root.ui-scale;
+            height: parent.height;
+            text: root.message;
+            font-size: 11px * root.ui-scale;
+            color: #526775;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

@@ -1,0 +1,154 @@
+import { MarqueeLabel } from "marquee-label.slint";
+
+// Synced preview follows playback; entering browse displays full wrapped text.
+component LyricSlot inherits Rectangle {
+    in property <string> words;
+    in property <bool> current: false;
+    in property <float> ui-scale: 1;
+    height: max(34px * root.ui-scale, lyric.preferred-height + 10px * root.ui-scale);
+    background: root.current ? #c9e5f080 : transparent;
+    lyric := Text {
+        x: 4px * root.ui-scale;
+        y: 4px * root.ui-scale;
+        width: parent.width - 8px * root.ui-scale;
+        text: root.words;
+        font-size: (root.current ? 18px : 16px) * root.ui-scale;
+        color: root.current ? #173c60 : #6a7d8b;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+    }
+}
+
+export component LyricsPanel inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <string> title;
+    in property <string> artist;
+    in property <[string]> lines;
+    in property <int> active: -1;
+    in property <string> plain;
+    in property <string> transcript;
+    in property <string> prefix;
+    in property <bool> manual: false;
+    in property <string> message;
+    in property <int> scroll: 0;
+    property <string> browse-text: root.plain != "" ? root.plain : root.transcript;
+    // Offsets are unscaled logical pixels, derived from wrapped text geometry,
+    // not lyric indices. Bind these outputs all the way to the input controller.
+    property <length> overflow-height: max(0px, transcript-text.preferred-height - viewport.height);
+    out property <int> max-scroll: ceil(root.overflow-height / (1px * root.ui-scale));
+    out property <int> active-scroll: max(0, round((prefix-text.preferred-height - viewport.height / 2) / (1px * root.ui-scale)));
+    callback scroll-step(int);
+    callback activate();
+    callback request-focus();
+    background: transparent;
+    clip: true;
+
+    TouchArea {
+        clicked => { root.request-focus(); }
+        double-clicked => { root.request-focus(); root.activate(); }
+        scroll-event(event) => {
+            if event.delta-y != 0px {
+                root.request-focus();
+                root.scroll-step(event.delta-y > 0px ? 1 : -1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    MarqueeLabel {
+        x: 4px * root.ui-scale;
+        y: 0px;
+        width: root.width - 8px * root.ui-scale;
+        height: 18px * root.ui-scale;
+        text: root.title;
+        selected: true;
+        centered: true;
+        font-size: 13;
+        foreground: #34485b;
+        ui-scale: root.ui-scale;
+    }
+    MarqueeLabel {
+        x: 4px * root.ui-scale;
+        y: 18px * root.ui-scale;
+        width: root.width - 8px * root.ui-scale;
+        height: 16px * root.ui-scale;
+        text: root.artist;
+        selected: true;
+        centered: true;
+        font-size: 12;
+        foreground: #526775;
+        ui-scale: root.ui-scale;
+    }
+    Rectangle {
+        y: 35px * root.ui-scale;
+        width: root.width;
+        height: 1px * root.ui-scale;
+        background: #6b8ba32b;
+    }
+    Rectangle {
+        y: 36px * root.ui-scale;
+        width: root.width;
+        height: 1px * root.ui-scale;
+        background: #ffffff80;
+    }
+    viewport := Rectangle {
+        y: 38px * root.ui-scale;
+        width: root.width;
+        height: max(0px, root.height - self.y);
+        background: transparent;
+        clip: true;
+        if root.lines.length > 0 && !root.manual: VerticalLayout {
+            width: parent.width;
+            y: (viewport.height - self.preferred-height) / 2;
+            spacing: 4px * root.ui-scale;
+            LyricSlot {
+                width: parent.width;
+                words: root.active > 0 ? root.lines[root.active - 1] : "";
+                ui-scale: root.ui-scale;
+            }
+            LyricSlot {
+                width: parent.width;
+                words: root.active >= 0 && root.active < root.lines.length ? root.lines[root.active] : "…";
+                current: true;
+                ui-scale: root.ui-scale;
+            }
+            LyricSlot {
+                width: parent.width;
+                words: root.active + 1 < root.lines.length ? root.lines[max(0, root.active + 1)] : "";
+                ui-scale: root.ui-scale;
+            }
+            animate y { duration: 180ms; easing: ease-in-out; }
+        }
+        prefix-text := Text {
+            visible: false;
+            width: root.width - 8px * root.ui-scale;
+            text: root.prefix;
+            font-size: 16px * root.ui-scale;
+            wrap: word-wrap;
+        }
+        transcript-text := Text {
+            visible: root.plain != "" || (root.manual && root.lines.length > 0);
+            x: 4px * root.ui-scale;
+            y: -min(root.overflow-height, max(0, root.scroll) * 1px * root.ui-scale);
+            width: root.width - 8px * root.ui-scale;
+            height: self.preferred-height;
+            text: root.browse-text;
+            font-size: 16px * root.ui-scale;
+            color: #34485b;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            // Manual offsets must paint immediately, even during rapid wheel input.
+        }
+        if root.message != "": Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.message;
+            font-size: 17px * root.ui-scale;
+            color: #526775;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}

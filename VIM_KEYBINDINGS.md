@@ -8,8 +8,17 @@
 | `k` / `↑` | Up | Move selection up in menu |
 | `h` / `←` / `Esc` | Left/Back | Go back to menu from open page |
 | `l` / `→` / `Enter` | Right/Open | Open selected menu item |
-| `.` | Repeat | Repeats last up/down selection step |
 | `g` / `G` | First/Last | Jump to the first/last item, across pages |
+
+## MPD mixer volume
+
+- `,` lowers and `.` raises the **MPD internal mixer** by 5 percentage points
+  from any page; neither changes macOS system volume or handles hardware keys.
+- Settings → Playback → Volume shows a single 0–100% slider. `j/k`, ↑/↓
+  and wheel rotation adjust it by 5 points; mouse click/drag sets an exact value
+  and commits once on release. MENU/`h` returns to Playback settings.
+- If MPD has no software mixer, the control is disabled and displays
+  “MPD mixer unavailable”. The playback page reflects external volume changes.
 
 ## Transport Controls
 
@@ -32,26 +41,50 @@ The click wheel has four sections and a center button:
 - **Center** - Click to select/open menu item
 - **Drag around the outer ring** - Scroll through lists
 
-## Now Playing: Seeking
+## Unified LCD selection and activation
 
-- **Center / Enter**: enter scrubbing; press again to commit.
-- **h / ← / Previous**: restart current song after 3 seconds elapsed, otherwise
-  previous track; while scrubbing, preview five seconds backward instead.
-- **l / → / Next**: next track; while scrubbing, preview five seconds forward instead.
-- **Drag the wheel on Now Playing**: automatically begin a preview; clockwise
-  seeks forward, counterclockwise backward. Release to commit once.
-- **j / ↓** while scrubbing: seek backward five seconds.
-- **k / ↑** while scrubbing: seek forward five seconds.
-- **Play button / Space** while scrubbing: commit and exit (like Center / Enter).
-  Otherwise they retain normal play/pause behavior. Menu j/k navigation is unchanged.
-- **MENU / Esc**: cancel without seeking.
-- **Click or drag the bar**: preview the mouse position; release to commit once.
-- The thin Aqua bar brightens and shows a small marker during preview. Times
-  show the preview position while MPD continues playback normally.
-- Seeking requires a known positive duration and a playing or paused track.
-  A changed track cancels the preview. Committing a paused seek does not resume it.
-- Existing transport keys still work. Queue position is the actual MPD queue
-  position (not random-mode playback order).
+- **Single-click any row**: select/highlight only, including settings and actions.
+- **j/k, ↓/↑, mouse wheel or rotational click wheel**: move that same selection.
+  Fine mouse-wheel/trackpad deltas accumulate before one menu step; click-wheel
+  rotation keeps its existing response.
+- **Double-click a row, Enter, l/→, or virtual centre button**: activate through
+  the same dispatcher. Double-clicking selects the target and activates once;
+  ordinary clicks never execute an action.
+- Progress-bar dragging remains a direct continuous control. After switching
+  workspaces, click the iPod to give its dockless window keyboard focus; merely
+  viewing the pinned window does not take focus from the active application.
+
+## Now Playing and Lyrics
+
+| Key | Normal playback view | Carousel mode |
+| --- | --- | --- |
+| `h` / `←` / `Esc` / MENU | Back | Lyrics → playback → exit carousel |
+| `l` / `→` / Enter / centre | Activate carousel | Keep carousel active |
+| `j` | Seek backward 5 seconds | Next panel; scroll down in plain lyrics |
+| `k` | Seek forward 5 seconds | Previous panel; scroll up in plain lyrics |
+| `↓` / `↑` | Seek forward / backward 5 seconds | Next / previous panel; scroll plain lyrics |
+| `n` / `]` | Next song | Next song |
+| `p` / `[` | Restart after 3 seconds, otherwise previous | Same |
+| Space / play button | Play/pause | Play/pause |
+
+- Double-click the artwork/metadata area to activate the carousel with a mouse.
+  Mouse-wheel or rotational-wheel scrolling then navigates the panels. Outside
+  carousel mode, these scroll inputs seek directly, like j/k.
+- Synced lyrics automatically follow MPD elapsed time, including paused seeks.
+  Enter/centre (or double-click lyrics) toggles full-transcript browsing;
+  j/k and wheel scroll while browsing. Enter/centre or MENU/h exits browsing
+  and snaps back to the currently synced lyric. The next MENU/h returns to
+  playback. Plain lyrics always scroll manually; MENU/h returns to playback.
+- Long synced lines wrap fully, with a full scrollable transcript in browse mode.
+  Selected LCD rows and long Now Playing title/artist labels slide horizontally
+  after a short pause; unselected rows remain compact and elided.
+- Click or drag the progress bar to preview; release commits once. MENU cancels.
+  Seeking needs a positive duration and a playing or paused track. Track changes
+  cancel a drag; seeking while paused never resumes playback.
+- Transport buttons always transport, including during a drag (which is cancelled).
+- Queue position remains the actual MPD queue position, not random playback order.
+
+See [lyrics/cache behavior and validation](docs/LYRICS.md).
 
 ## Queue and Settings
 
@@ -61,8 +94,8 @@ The click wheel has four sections and a center button:
 - Individual-song **Play Now** still appends and starts that song. **Play Next** and
   **Add to Queue** preserve the queue and playback settings.
 - **Add to Playlist** changes a saved MPD playlist, not the active queue.
-- **Settings → Playback** controls MPD volume (0–100%, not system volume), native
-  crossfade (Off, 1, 2, 3, 5, 10 seconds), repeat and random/shuffle mode. Status
+- **Settings → Playback** controls MPD volume (0–100%, not system volume) via a
+  slider, native crossfade (Off, 1, 2, 3, 5, 10 seconds), repeat and random/shuffle mode. Status
   follows external changes. An unavailable mixer is shown explicitly.
 - Seek steps use the named `seek-interval-seconds` property in `ui/app.slint`.
 

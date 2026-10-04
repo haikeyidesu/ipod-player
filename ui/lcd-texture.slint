@@ -1,0 +1,46 @@
+// Passive LCD colour-filter matrix under the glass. Tiny seamless RGBA tiles
+// repeat across artwork and UI alike; their integer-sized cells avoid resampling
+// shimmer at the supported window sizes. No input handlers or per-frame drawing.
+// strength is reserved for a future Appearance preference.
+export component LcdTexture inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in property <float> strength: 1;
+    opacity: max(0, min(1, root.strength));
+    background: #7cb9df04;
+    border-radius: 4px * root.ui-scale;
+    clip: true;
+
+    // A broad, low-opacity backlight rather than a glow around glyphs.
+    // Paint it beneath the subpixel filter so lettering and artwork stay sharp.
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: @radial-gradient(circle, #d9f4ff14 0%, #d9f4ff08 54%, #d9f4ff00 100%);
+    }
+    Image {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        source: root.ui-scale < 0.86 ? @image-url("../assets/lcd/rgb-cell-5.png")
+            : root.ui-scale < 1.2 ? @image-url("../assets/lcd/rgb-cell-6.png")
+            : @image-url("../assets/lcd/rgb-cell-9.png");
+        horizontal-tiling: repeat;
+        vertical-tiling: repeat;
+        image-rendering: pixelated;
+    }
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: @linear-gradient(90deg, #193d520b 0%, #193d5200 5%, #193d5200 95%, #193d520b 100%);
+    }
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: @linear-gradient(180deg, #193d5209 0%, #193d5200 4%, #193d5200 96%, #193d520d 100%);
+    }
+}

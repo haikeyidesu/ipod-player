@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build a relocatable, ad-hoc-signed native-host macOS app. No MPD installation."""
+import argparse
 import importlib.util
 import json
 import os
@@ -18,7 +19,38 @@ def run(*args, **kwargs):
     return subprocess.run(args, cwd=ROOT, check=True, **kwargs)
 
 
+def install(bundle, parent):
+    """Stage a full copy before replacing an installed app; retain the old bundle."""
+    parent.mkdir(parents=True, exist_ok=True)
+    destination = parent / bundle.name
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise RuntimeError('Refusing to replace non-directory app destination: ' + str(destination))
+    stage = Path(tempfile.mkdtemp(prefix='.stage-', dir=parent))
+    backup = None
+    try:
+        candidate = stage / bundle.name
+        shutil.copytree(bundle, candidate)
+        run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(candidate))
+        if destination.exists():
+            backup = parent / (bundle.name + '.previous-' + str(time.time_ns()))
+            destination.rename(backup)
+        try:
+            candidate.rename(destination)
+        except OSError:
+            if backup is not None:
+                backup.rename(destination)
+            raise
+        print('Installed: ' + str(destination))
+        if backup is not None:
+            print('Previous installed app: ' + str(backup))
+    finally:
+        shutil.rmtree(stage)
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--no-install', action='store_true', help='Build and verify only; do not replace the installed app')
+    args = parser.parse_args()
     if sys.platform != 'darwin':
         raise SystemExit('This bundle script requires macOS, Xcode command-line tools and Swift.')
     host = next(line.split(': ', 1)[1] for line in run('rustc', '-vV', capture_output=True, text=True).stdout.splitlines() if line.startswith('host: '))
@@ -52,6 +84,9 @@ def main():
             'CFBundleVersion': package['version'].split('-')[0],
             'LSMinimumSystemVersion': config['minimum-system-version'],
             'NSHighResolutionCapable': True,
+            # A dockless agent app retains the pinned window across workspaces.
+            # The NSWindow remains Slint-owned and can still receive keyboard input.
+            'LSUIElement': True,
             'NSPrincipalClass': 'NSApplication',
             'NSHumanReadableCopyright': 'Copyright © 2026 haikeyidesu. MIT; dependencies retain their licenses.',
         }
@@ -96,6 +131,8 @@ def main():
             destination.rename(parent / (bundle.name + '.previous-' + str(time.time_ns())))
         bundle.rename(destination)
         print('Bundle: ' + str(destination))
+        if not args.no_install:
+            install(destination, Path('/Applications'))
         print(linked)
         print('Local ad-hoc signing only. Developer ID signing/notarization is required for normal public distribution.')
     finally:

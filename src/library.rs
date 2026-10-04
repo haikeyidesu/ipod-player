@@ -30,6 +30,7 @@ enum View {
     Actions(mpd::QueueSource, String),
     AddToPlaylist(String),
     Settings,
+    Window,
     Playback,
     Volume,
     Crossfade,
@@ -44,6 +45,7 @@ impl View {
             Self::Home => "",
             Self::AddToPlaylist(_) => "Add to Playlist",
             Self::Settings => "Settings",
+            Self::Window => "Window",
             Self::Playback => "Playback",
             Self::Volume => "Volume",
             Self::Crossfade => "Crossfade",
@@ -98,6 +100,8 @@ enum Entry {
     PlaylistTarget(String, String),
     Setting(String, mpd::PlaybackSetting),
     Info(String),
+    PinWindow,
+    ResetWindow,
 }
 impl Entry {
     fn home_menu() -> Vec<Self> {
@@ -113,6 +117,8 @@ impl Entry {
         match self {
             Self::Navigate(label, _) | Self::Action(label, _) => label,
             Self::ShuffleSongs => "Shuffle Songs",
+            Self::PinWindow => "Always on Top",
+            Self::ResetWindow => "Reset Window Size",
             Self::Clear => "Clear Queue",
             Self::Cancel => "Cancel",
             Self::Queue(s) | Self::Remove(s) => &s.song.title,
@@ -125,6 +131,10 @@ impl Entry {
     fn display_label(&self, app: &AppWindow) -> String {
         use mpd::PlaybackSetting as S;
         match self {
+            Self::PinWindow => format!(
+                "Always on Top [{}]",
+                if app.get_window_pinned() { "On" } else { "Off" }
+            ),
             Self::Navigate(_, View::Volume) => format!(
                 "Volume: {}",
                 if app.get_player_volume() < 0 {
@@ -174,6 +184,8 @@ impl Entry {
                 | Self::PlaylistTarget(_, _)
                 | Self::Setting(_, _)
                 | Self::Info(_)
+                | Self::PinWindow
+                | Self::ResetWindow
         )
     }
     fn is_shuffle(&self) -> bool {
@@ -220,6 +232,27 @@ impl Mutation {
             Self::Shuffle => mpd::shuffle_all_songs(),
         }
     }
+    fn feedback(&self, succeeded: bool) -> Option<&'static str> {
+        use mpd::{PlaybackSetting as S, QueueAction as A, QueueSource};
+        if !succeeded {
+            return matches!(self, Self::AddToPlaylist(_, _))
+                .then_some("Unable to add to playlist");
+        }
+        match self {
+            Self::AddToPlaylist(_, _) => Some("Added to playlist"),
+            Self::Source(_, A::Append) => Some("Added to queue"),
+            Self::Source(_, A::PlayNext) => Some("Playing next"),
+            Self::Source(QueueSource::Song(_), A::PlayNow) => Some("Added to queue"),
+            Self::Source(_, A::PlayNow | A::Shuffle) | Self::Shuffle => Some("Queue replaced"),
+            Self::Remove(_) => Some("Removed from queue"),
+            Self::Clear => Some("Queue cleared"),
+            Self::Setting(S::Repeat(true)) => Some("Repeat On"),
+            Self::Setting(S::Repeat(false)) => Some("Repeat Off"),
+            Self::Setting(S::Random(true)) => Some("Shuffle On"),
+            Self::Setting(S::Random(false)) => Some("Shuffle Off"),
+            Self::PlayQueue(_) | Self::Setting(_) => None,
+        }
+    }
     fn starts_playback(&self) -> bool {
         matches!(
             self,
@@ -257,15 +290,8 @@ impl Browser {
         self.stack.last().cloned().unwrap_or(View::Home)
     }
     fn show(&self, app: &AppWindow, message: &str) {
-        let title = if self.view() == View::Volume {
-            if app.get_player_volume() < 0 {
-                "Volume unavailable".into()
-            } else {
-                format!("Volume: {}%", app.get_player_volume())
-            }
-        } else {
-            self.view().title().to_string()
-        };
+        let title = self.view().title().to_string();
+        app.set_volume_page(self.view() == View::Volume);
         app.set_page_title(title.into());
         app.set_browse_active(self.view() != View::NowPlaying);
         app.set_browse_message(message.into());
@@ -325,13 +351,15 @@ impl Browser {
             self.loading = false;
             self.selected = 0;
             self.show(app, "");
+        } else if self.view() == View::Volume {
+            // The slider is an interactive page, not a paginated set of 101 actions.
+            self.generation += 1;
+            self.rows.clear();
+            self.loading = false;
+            self.selected = 0;
+            self.show(app, "");
         } else {
-            let offset = if self.view() == View::Volume {
-                app.get_player_volume().max(0) as usize / PAGE * PAGE
-            } else {
-                0
-            };
-            self.fetch(app, tx, offset, false);
+            self.fetch(app, tx, 0, false);
         }
     }
     fn mutate(&mut self, mutation: Mutation, app: &AppWindow, tx: &mpsc::Sender<Job>) {
@@ -366,6 +394,11 @@ impl Browser {
             }
             Entry::Setting(_, setting) => self.mutate(Mutation::Setting(setting), app, tx),
             Entry::Info(_) => {}
+            Entry::PinWindow => {
+                app.invoke_window_pin_requested();
+                self.show(app, "");
+            }
+            Entry::ResetWindow => app.invoke_window_reset_requested(),
             Entry::Artist(name) => self.push(
                 View::Actions(mpd::QueueSource::Artist(name.clone()), name),
                 app,
@@ -508,8 +541,6 @@ impl Browser {
                 self.rows = rows;
                 self.selected = if request.select_last {
                     self.rows.len().saturating_sub(1)
-                } else if request.view == View::Volume {
-                    self.rows.iter().position(|entry| matches!(entry, Entry::Setting(_, mpd::PlaybackSetting::Volume(v)) if i32::from(*v) == app.get_player_volume())).unwrap_or(0)
                 } else {
                     0
                 };
@@ -541,6 +572,9 @@ impl Browser {
         }
         self.loading = false;
         self.mutating = false;
+        if let Some(message) = mutation.feedback(result.is_ok()) {
+            app.invoke_show_status(message.into());
+        }
         match result {
             Ok(()) => {
                 if mutation.starts_playback() {
@@ -641,6 +675,8 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
         View::Settings => page(
             vec![
                 Entry::Navigate("Playback", View::Playback),
+                #[cfg(target_os = "macos")]
+                Entry::Navigate("Window", View::Window),
                 Entry::Navigate("Controls (future)", View::Future("Controls")),
                 Entry::Navigate("Appearance (future)", View::Future("Appearance")),
                 Entry::Navigate("About", View::About),
@@ -656,18 +692,8 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
             ],
             offset,
         ),
-        View::Volume => {
-            if mpd::read_status()?.volume.is_none() {
-                vec![Entry::Info("MPD mixer unavailable".into())]
-            } else {
-                page(
-                    (0..=100)
-                        .map(|v| Entry::Setting(format!("{v}%"), mpd::PlaybackSetting::Volume(v)))
-                        .collect(),
-                    offset,
-                )
-            }
-        }
+        View::Window => page(vec![Entry::PinWindow, Entry::ResetWindow], offset),
+        View::Volume => Vec::new(),
         View::Crossfade => page(
             [0, 1, 2, 3, 5, 10]
                 .into_iter()
@@ -921,7 +947,6 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
     browser.lock().unwrap().fetch(app, &tx, 0, false);
     let settings_controller = browser.clone();
     let settings_weak = app.as_weak();
-    let settings_requests = tx.clone();
     app.on_refresh_settings(move || {
         if let Some(app) = settings_weak.upgrade() {
             let mut controller = settings_controller.lock().unwrap();
@@ -931,13 +956,6 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
                     View::Playback | View::Volume | View::Crossfade | View::Repeat | View::Random
                 )
             {
-                if controller.view() == View::Volume && !controller.rows.is_empty() {
-                    let unavailable = matches!(controller.rows[0], Entry::Info(_));
-                    if unavailable != (app.get_player_volume() < 0) {
-                        controller.fetch(&app, &settings_requests, 0, false);
-                        return;
-                    }
-                }
                 // Status updates must not reset a mouse-selected settings row.
                 controller.selected = (app.get_selected_index().max(0) as usize)
                     .min(controller.rows.len().saturating_sub(1));
@@ -988,6 +1006,127 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_navigation_preserves_pagination_and_never_activates() {
+        use slint::platform::{
+            Platform, PlatformError, WindowAdapter,
+            software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        };
+        struct TestPlatform;
+        impl Platform for TestPlatform {
+            fn create_window_adapter(
+                &self,
+            ) -> Result<std::rc::Rc<dyn WindowAdapter>, PlatformError> {
+                Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+            }
+        }
+        slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+        let app = AppWindow::new().unwrap();
+        for count in [0usize, 1, 5, 6, 7, 12, 13] {
+            let (tx, rx) = mpsc::channel();
+            let mut browser = Browser::default();
+            let rows = |offset| {
+                (offset..count)
+                    .take(PAGE + 1)
+                    .map(|i| Entry::Info(i.to_string()))
+                    .collect::<Vec<_>>()
+            };
+            let complete = |browser: &mut Browser| {
+                while let Ok(job) = rx.try_recv() {
+                    let (request, entries) = match job {
+                        Job::Fetch(request) => {
+                            let entries = rows(request.offset);
+                            (request, entries)
+                        }
+                        Job::JumpLast(mut request) => {
+                            let (offset, entries) = last_page(|offset| Ok(rows(offset))).unwrap();
+                            request.offset = offset;
+                            (request, entries)
+                        }
+                        Job::Mutate(_, _) => panic!("navigation activated an item"),
+                    };
+                    browser.complete(&app, &tx, request, Ok(entries));
+                }
+            };
+            browser.fetch(&app, &tx, 0, false);
+            complete(&mut browser);
+            let mut expected = 0usize;
+            for delta in
+                std::iter::repeat_n(-1, count + 2).chain(std::iter::repeat_n(1, count * 2 + 2))
+            {
+                browser.step(delta, &app, &tx);
+                // Pending page loads must ignore extra wheel ticks.
+                if browser.loading {
+                    browser.step(delta, &app, &tx);
+                }
+                complete(&mut browser);
+                if count == 0 {
+                    assert!(browser.rows.is_empty());
+                    continue;
+                }
+                expected = (expected as i32 + delta).clamp(0, count as i32 - 1) as usize;
+                assert_eq!(browser.offset + browser.selected, expected);
+                assert_eq!(app.get_selected_index(), browser.selected as i32);
+                assert_eq!(browser.rows[browser.selected].label(), expected.to_string());
+            }
+            for last in [true, false] {
+                browser.jump(last, &app, &tx);
+                complete(&mut browser);
+                assert_eq!(
+                    browser.offset + browser.selected,
+                    if last { count.saturating_sub(1) } else { 0 }
+                );
+                browser.step(if last { 1 } else { -1 }, &app, &tx);
+                assert_eq!(
+                    browser.offset + browser.selected,
+                    if last { count.saturating_sub(1) } else { 0 }
+                );
+                assert!(
+                    rx.try_recv().is_err(),
+                    "boundary scroll must not fetch or activate"
+                );
+            }
+        }
+        // Window actions stay on the UI thread, never enqueue MPD mutations,
+        // and refresh the label without resetting selection or navigation.
+        let (tx, rx) = mpsc::channel();
+        let mut browser = Browser {
+            stack: vec![View::Window],
+            rows: fetch(&View::Window, 0).unwrap(),
+            ..Default::default()
+        };
+        let weak = app.as_weak();
+        app.on_window_pin_requested(move || {
+            let app = weak.upgrade().unwrap();
+            app.set_window_pinned(!app.get_window_pinned());
+        });
+        let resets = std::rc::Rc::new(std::cell::Cell::new(0));
+        let received = resets.clone();
+        app.on_window_reset_requested(move || received.set(received.get() + 1));
+        browser.open(0, &app, &tx);
+        assert_eq!(browser.rows[0].display_label(&app), "Always on Top [On]");
+        browser.open(1, &app, &tx);
+        assert!(app.get_window_pinned());
+        assert_eq!(resets.get(), 1);
+        browser.open(0, &app, &tx);
+        assert_eq!(browser.rows[0].display_label(&app), "Always on Top [Off]");
+        assert_eq!(browser.view(), View::Window);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn window_menu_is_local_and_uses_the_existing_leaf_actions() {
+        let rows = fetch(&View::Window, 0).unwrap();
+        assert_eq!(
+            rows.iter().map(Entry::label).collect::<Vec<_>>(),
+            ["Always on Top", "Reset Window Size"]
+        );
+        assert!(rows.iter().all(Entry::is_leaf));
+        assert!(matches!(rows[0], Entry::PinWindow));
+        assert!(matches!(rows[1], Entry::ResetWindow));
+    }
+
     #[test]
     fn end_navigation_handles_empty_exact_and_partial_pages() {
         for count in [0usize, 1, 5, 6, 7, 12, 13, 10000] {
@@ -1026,6 +1165,8 @@ mod tests {
             settings.iter().map(Entry::label).collect::<Vec<_>>(),
             [
                 "Playback",
+                #[cfg(target_os = "macos")]
+                "Window",
                 "Controls (future)",
                 "Appearance (future)",
                 "About"
@@ -1036,6 +1177,37 @@ mod tests {
         assert_eq!(fetch(&View::Repeat, 0).unwrap().len(), 2);
         assert_eq!(fetch(&View::Random, 0).unwrap().len(), 2);
         assert!(!Mutation::AddToPlaylist("Saved".into(), "song.flac".into()).starts_playback());
+    }
+
+    #[test]
+    fn feedback_describes_only_completed_supported_mutations() {
+        use mpd::{PlaybackSetting as S, QueueAction as A, QueueSource as Q};
+        let saved = Mutation::AddToPlaylist("Saved".into(), "song.flac".into());
+        assert_eq!(saved.feedback(true), Some("Added to playlist"));
+        assert_eq!(saved.feedback(false), Some("Unable to add to playlist"));
+        let song = Q::Song("song.flac".into());
+        assert_eq!(
+            Mutation::Source(song.clone(), A::Append).feedback(true),
+            Some("Added to queue")
+        );
+        assert_eq!(
+            Mutation::Source(song, A::PlayNext).feedback(true),
+            Some("Playing next")
+        );
+        assert_eq!(
+            Mutation::Source(Q::Artist("Artist".into()), A::PlayNow).feedback(true),
+            Some("Queue replaced")
+        );
+        assert_eq!(Mutation::Clear.feedback(true), Some("Queue cleared"));
+        assert_eq!(
+            Mutation::Setting(S::Repeat(true)).feedback(true),
+            Some("Repeat On")
+        );
+        assert_eq!(
+            Mutation::Setting(S::Random(false)).feedback(true),
+            Some("Shuffle Off")
+        );
+        assert_eq!(Mutation::Clear.feedback(false), None);
     }
 
     #[test]
