@@ -14,6 +14,9 @@ be added here. See [screenshot guidance](docs/screenshots/README.md). Local visu
 test renders remain under ignored `target/now-playing-preview/`; they are not
 published with personal music artwork.
 
+Engineering overview, audit findings and verification results:
+[Architecture](docs/ARCHITECTURE.md).
+
 ## Features
 
 - Frameless Aqua/glass iPod window, proportional scaling and native macOS resizing.

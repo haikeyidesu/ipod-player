@@ -372,9 +372,8 @@ fn parse_decimal_time(s: &str) -> Result<f64, String> {
     Ok(total)
 }
 
-/// Read current song metadata from MPD.
-///
-/// Sends `currentsong` command and parses the response into a SongInfo struct.
+/// Open a fresh connection for a status/metadata pair. Failed reads are not
+/// retained across polls; the next poll naturally attempts reconnection.
 fn read_snapshot() -> Result<(PlayerState, SongInfo), String> {
     let (host, port) = endpoint()?;
     let addresses = (host.as_str(), port)

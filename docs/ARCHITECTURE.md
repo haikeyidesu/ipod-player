@@ -72,6 +72,39 @@ Strict all-target Clippy reports ten existing style/iterator warnings.
    not generation; repeated A→B→A values can acknowledge a newer pending request
    prematurely. Channel ordering limits but does not eliminate transient feedback.
 
+## Implemented checkpoints and final verification
+
+- `8b9fe47`: status and metadata now share one command-list connection. Separate
+  `list_OK` boundaries prevent duration/field collisions; mismatched song IDs still
+  retry once, then fail rather than publishing mixed-track state. No mutation is
+  automatically replayed. A generic `Read + Write` stream seam permits an in-memory
+  duplex protocol fixture without a mock framework or dependency.
+- `f8ad79d`: settings models refresh only when volume/crossfade/repeat/random
+  changes (including unavailable mixer transitions); elapsed-only ticks do not
+  rebuild them. Lyrics candidates parse once, then select the first best-ranked
+  result without sorting. Existing ambiguity and tie behavior is regression-tested.
+- Five regression tests added; existing strict Clippy warnings resolved. No Slint,
+  visual asset, dependency or native-platform behavior changes in this pass.
+
+Structural before/after: ordinary snapshot TCP connections **2 → 1**; MPD data
+commands remain **2 → 2**. Mismatch retry maximum connections **4 → 2**. These are
+source/protocol-fixture counts, not measured network latency or CPU improvements.
+Elapsed-only settings refresh callbacks **1 → 0 per changed snapshot**; candidate
+LRC decoding **repeated → once per metadata-matching candidate**.
+
+Final checks on rustc 1.98.1: fmt, locked check, locked tests and strict all-target
+Clippy pass. **71 tests pass, one opt-in live LRCLIB test remains ignored**.
+The macOS bundle script passes release compilation (8.12 s incremental), linked
+library checks, plist validation and strict ad-hoc signature verification with
+`--no-install`. Bundle: `target/bundle/macos/iPod Player.app`. Existing warnings:
+no custom icon and `dispatch-0.2.0` license review needed before distribution.
+
+A local TCP-listener test was blocked by sandbox permissions; it was replaced
+with a deterministic in-memory duplex fixture. Real MPD interoperability and
+native UI/Control Center manual checks were not run. No CPU/RSS/startup/latency
+speedup is claimed. Worker shutdown, cache policy, volume request tickets and
+native profiling remain follow-up work rather than unverified rewrites.
+
 ## Measurement and verification policy
 
 No native CPU/RSS/startup or real-library latency baseline was collected. Running
