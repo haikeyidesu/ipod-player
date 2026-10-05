@@ -86,7 +86,8 @@ fn friendly(path: &str) -> &str {
 #[derive(Clone)]
 enum Entry {
     Navigate(&'static str, View),
-    ShuffleSongs,
+    ShuffleQueue,
+    RandomisePlay,
     Queue(mpd::QueueSong),
     Remove(mpd::QueueSong),
     Artist(String),
@@ -107,7 +108,8 @@ impl Entry {
     fn home_menu() -> Vec<Self> {
         vec![
             Self::Navigate("Music", View::Music),
-            Self::ShuffleSongs,
+            Self::ShuffleQueue,
+            Self::RandomisePlay,
             Self::Navigate("Queue / Up Next", View::Queue),
             Self::Navigate("Now Playing", View::NowPlaying),
             Self::Navigate("Settings", View::Settings),
@@ -116,7 +118,8 @@ impl Entry {
     fn label(&self) -> &str {
         match self {
             Self::Navigate(label, _) | Self::Action(label, _) => label,
-            Self::ShuffleSongs => "Shuffle Songs",
+            Self::ShuffleQueue => "Shuffle Queue",
+            Self::RandomisePlay => "Randomise Play",
             Self::PinWindow => "Always on Top",
             Self::ResetWindow => "Reset Window Size",
             Self::Clear => "Clear Queue",
@@ -177,7 +180,8 @@ impl Entry {
             Self::Song(_)
                 | Self::Queue(_)
                 | Self::Remove(_)
-                | Self::ShuffleSongs
+                | Self::ShuffleQueue
+                | Self::RandomisePlay
                 | Self::Action(_, _)
                 | Self::Clear
                 | Self::Cancel
@@ -191,7 +195,7 @@ impl Entry {
     fn is_shuffle(&self) -> bool {
         matches!(
             self,
-            Self::ShuffleSongs | Self::Action(_, mpd::QueueAction::Shuffle)
+            Self::ShuffleQueue | Self::RandomisePlay | Self::Action(_, mpd::QueueAction::Shuffle)
         )
     }
     fn is_song(&self) -> bool {
@@ -218,7 +222,8 @@ enum Mutation {
     PlayQueue(u64),
     Remove(u64),
     Clear,
-    Shuffle,
+    ShuffleQueue,
+    RandomisePlay,
 }
 impl Mutation {
     fn run(&self) -> Result<(), String> {
@@ -229,7 +234,8 @@ impl Mutation {
             Self::Clear => mpd::clear_queue(),
             Self::AddToPlaylist(name, file) => mpd::add_to_playlist(name, file),
             Self::Setting(setting) => mpd::set_playback(*setting),
-            Self::Shuffle => mpd::shuffle_all_songs(),
+            Self::ShuffleQueue => mpd::shuffle_queue(),
+            Self::RandomisePlay => mpd::shuffle_all_songs(),
         }
     }
     fn feedback(&self, succeeded: bool) -> Option<&'static str> {
@@ -243,7 +249,10 @@ impl Mutation {
             Self::Source(_, A::Append) => Some("Added to queue"),
             Self::Source(_, A::PlayNext) => Some("Playing next"),
             Self::Source(QueueSource::Song(_), A::PlayNow) => Some("Added to queue"),
-            Self::Source(_, A::PlayNow | A::Shuffle) | Self::Shuffle => Some("Queue replaced"),
+            Self::Source(_, A::PlayNow | A::Shuffle) | Self::RandomisePlay => {
+                Some("Queue replaced")
+            }
+            Self::ShuffleQueue => Some("Queue shuffled"),
             Self::Remove(_) => Some("Removed from queue"),
             Self::Clear => Some("Queue cleared"),
             Self::Setting(S::Repeat(true)) => Some("Repeat On"),
@@ -256,7 +265,8 @@ impl Mutation {
     fn starts_playback(&self) -> bool {
         matches!(
             self,
-            Self::Source(_, mpd::QueueAction::PlayNow | mpd::QueueAction::Shuffle) | Self::Shuffle
+            Self::Source(_, mpd::QueueAction::PlayNow | mpd::QueueAction::Shuffle)
+                | Self::RandomisePlay
         )
     }
 }
@@ -384,7 +394,8 @@ impl Browser {
         self.selected = index as usize;
         match entry {
             Entry::Navigate(_, view) => self.push(view, app, tx),
-            Entry::ShuffleSongs => self.mutate(Mutation::Shuffle, app, tx),
+            Entry::ShuffleQueue => self.mutate(Mutation::ShuffleQueue, app, tx),
+            Entry::RandomisePlay => self.mutate(Mutation::RandomisePlay, app, tx),
             Entry::Queue(song) => self.mutate(Mutation::PlayQueue(song.id), app, tx),
             Entry::Remove(song) => self.mutate(Mutation::Remove(song.id), app, tx),
             Entry::Clear => self.mutate(Mutation::Clear, app, tx),
@@ -757,6 +768,7 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
         ),
         View::QueueActions => page(
             vec![
+                Entry::ShuffleQueue,
                 Entry::Navigate("Remove from Queue", View::RemoveQueue),
                 Entry::Navigate("Clear Queue…", View::ConfirmClear),
             ],
@@ -1219,8 +1231,8 @@ mod tests {
         );
         let home = fetch(&View::Home, 0).unwrap();
         assert!(home.len() <= PAGE);
-        assert!(matches!(home[2], Entry::Navigate(_, View::Queue)));
-        assert!(matches!(home[3], Entry::Navigate(_, View::NowPlaying)));
+        assert!(matches!(home[3], Entry::Navigate(_, View::Queue)));
+        assert!(matches!(home[4], Entry::Navigate(_, View::NowPlaying)));
     }
 
     #[test]
@@ -1265,27 +1277,51 @@ mod tests {
     }
 
     #[test]
+    fn queue_shuffle_is_non_transport_and_randomise_replaces_and_plays() {
+        let rows = fetch(&View::QueueActions, 0).unwrap();
+        assert_eq!(
+            rows.iter().map(Entry::label).collect::<Vec<_>>(),
+            ["Shuffle Queue", "Remove from Queue", "Clear Queue…"]
+        );
+        assert!(matches!(rows[0], Entry::ShuffleQueue));
+        assert!(rows[0].is_leaf() && rows[0].is_shuffle());
+        assert!(!Mutation::ShuffleQueue.starts_playback());
+        assert!(Mutation::RandomisePlay.starts_playback());
+        assert_eq!(
+            Mutation::ShuffleQueue.feedback(true),
+            Some("Queue shuffled")
+        );
+        assert_eq!(Mutation::ShuffleQueue.feedback(false), None);
+        assert_eq!(
+            Mutation::RandomisePlay.feedback(true),
+            Some("Queue replaced")
+        );
+    }
+
+    #[test]
     fn home_order_and_pagination() {
         let rows = Entry::home_menu();
         assert_eq!(
             rows.iter().map(Entry::label).collect::<Vec<_>>(),
             [
                 "Music",
-                "Shuffle Songs",
+                "Shuffle Queue",
+                "Randomise Play",
                 "Queue / Up Next",
                 "Now Playing",
                 "Settings"
             ]
         );
-        assert_eq!(page(rows.clone(), 0).len(), 5);
-        assert_eq!(page(rows, 0)[2].label(), "Queue / Up Next");
+        assert_eq!(page(rows.clone(), 0).len(), PAGE);
+        assert_eq!(page(rows, 0)[3].label(), "Queue / Up Next");
     }
     #[test]
     fn row_semantics_and_action_pages() {
         assert!(!Entry::Folder("a/b".into()).is_leaf());
         assert_eq!(Entry::Folder("a/b".into()).label(), "b");
         assert!(Entry::Song(mpd::Song::default()).is_leaf());
-        assert!(Entry::ShuffleSongs.is_shuffle());
+        assert!(Entry::ShuffleQueue.is_shuffle());
+        assert!(Entry::RandomisePlay.is_shuffle());
         assert!(Entry::Action("Play Next", mpd::QueueAction::PlayNext).is_leaf());
         assert!(!Entry::Action("Play Next", mpd::QueueAction::PlayNext).is_song());
         let view = View::Actions(

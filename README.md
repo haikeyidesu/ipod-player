@@ -26,6 +26,10 @@ Engineering overview, audit findings and verification results:
 - Browse MPD artists, albums, songs, saved playlists and indexed folders.
 - Collection Play/Shuffle replaces the queue; Play Next/Add to Queue preserve it.
 - Song actions include adding to existing saved MPD playlists.
+- Shuffle Queue (Home or Queue Actions) reorders only existing entries, preserving
+  the current track and playing/paused/stopped state. MPD random mode is unchanged.
+- Randomise Play replaces the queue with the entire MPD library, shuffles and starts
+  playback (the former Shuffle Songs action).
 - Clear Queue preserves the current song; stable queue IDs back queue actions.
 - Direct five-second seeking, draggable progress bar and consistent Vim-style controls.
 - Vertical Now Playing/Lyrics carousel with synced LRCLIB lyrics, plain fallback

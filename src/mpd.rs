@@ -872,6 +872,16 @@ pub fn play_queue_id(id: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Reorder existing queue entries without clearing, adding or transporting.
+/// MPD preserves the current song and playback state; random mode is untouched.
+pub fn shuffle_queue() -> Result<(), String> {
+    shuffle_queue_using(|command| query(command).map(|_| ()))
+}
+
+fn shuffle_queue_using(mut send: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
+    send("shuffle")
+}
+
 /// Replace the queue with the whole MPD database, randomize it and play.
 /// MPD's empty URI addresses the database root; no song metadata is downloaded.
 pub fn shuffle_all_songs() -> Result<(), String> {
@@ -1281,6 +1291,25 @@ pub fn browse_directory(path: &str) -> Result<Vec<DirectoryEntry>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn queue_shuffle_only_reorders_and_propagates_failure() {
+        let mut commands = Vec::new();
+        shuffle_queue_using(|command| {
+            commands.push(command.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(commands, ["shuffle"]);
+        let mut attempts = 0;
+        let result = shuffle_queue_using(|command| {
+            attempts += 1;
+            assert_eq!(command, "shuffle");
+            Err("disconnected".into())
+        });
+        assert_eq!(result, Err("disconnected".into()));
+        assert_eq!(attempts, 1, "never replay a mutation automatically");
+    }
+
     #[test]
     fn snapshot_batches_two_commands_on_one_connection() {
         // Duplex fixture: no ports or process-global MPD environment changes.
