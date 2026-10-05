@@ -30,7 +30,13 @@ Engineering overview, audit findings and verification results:
   the current track and playing/paused/stopped state. MPD random mode is unchanged.
 - Randomise Play replaces the queue with the entire MPD library, shuffles and starts
   playback (the former Shuffle Songs action).
-- Clear Queue preserves the current song; stable queue IDs back queue actions.
+- Up Next songs open Play Now, Play Next, Add to Queue, Add to Playlist and
+  Remove from Queue actions. Play Now uses the existing entry; Play Next moves it
+  without duplicating it (the current song is left in place). Add to Queue adds a copy.
+  Removal targets the selected stable ID, even when the same file appears twice,
+  and returns to the refreshed queue. Removing the current song follows MPD behavior.
+- Queue Actions contains Shuffle Queue and Clear Queue. Clear Queue preserves
+  the current song; stable queue IDs back per-song actions.
 - Direct five-second seeking, draggable progress bar and consistent Vim-style controls.
 - Vertical Now Playing/Lyrics carousel with synced LRCLIB lyrics, plain fallback
   and a persistent offline cache; [lyrics behavior and privacy](docs/LYRICS.md).

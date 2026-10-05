@@ -872,6 +872,27 @@ pub fn play_queue_id(id: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Move an existing entry after the current song, never append a duplicate.
+/// Like addid +0, MPD 0.23+ resolves the destination relative to its live state.
+pub fn move_queue_next(id: u64) -> Result<(), String> {
+    if let Some(command) = move_next_command(id, &read_status()?) {
+        query(&command)?;
+    }
+    Ok(())
+}
+
+fn move_next_command(id: u64, state: &PlayerState) -> Option<String> {
+    // The current entry cannot also be its own successor. Leave playback alone.
+    if state.song_id == Some(id) {
+        None
+    } else {
+        Some(format!(
+            "moveid {id} {}",
+            if state.song_id.is_some() { "+0" } else { "0" }
+        ))
+    }
+}
+
 /// Reorder existing queue entries without clearing, adding or transporting.
 /// MPD preserves the current song and playback state; random mode is untouched.
 pub fn shuffle_queue() -> Result<(), String> {
@@ -1291,6 +1312,25 @@ pub fn browse_directory(path: &str) -> Result<Vec<DirectoryEntry>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn move_next_uses_stable_id_without_adding_or_transporting() {
+        let mut state = PlayerState::default();
+        assert_eq!(
+            move_next_command(42, &state).as_deref(),
+            Some("moveid 42 0")
+        );
+        state.song_id = Some(7);
+        for (playing, paused) in [(true, false), (false, true), (false, false)] {
+            state.playing = playing;
+            state.paused = paused;
+            assert_eq!(
+                move_next_command(42, &state).as_deref(),
+                Some("moveid 42 +0")
+            );
+            assert_eq!(move_next_command(7, &state), None);
+        }
+    }
+
     #[test]
     fn queue_shuffle_only_reorders_and_propagates_failure() {
         let mut commands = Vec::new();

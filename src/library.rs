@@ -14,7 +14,11 @@ enum View {
     Music,
     Queue,
     QueueActions,
-    RemoveQueue,
+    QueueSong {
+        id: u64,
+        file: String,
+        title: String,
+    },
     ConfirmClear,
     NowPlaying,
     Artists,
@@ -56,7 +60,7 @@ impl View {
             Self::Music => "Music",
             Self::Queue => "Up Next",
             Self::QueueActions => "Queue Actions",
-            Self::RemoveQueue => "Remove Item",
+            Self::QueueSong { title, .. } => title,
             Self::ConfirmClear => "Clear Queue?",
             Self::NowPlaying => "Now Playing",
             Self::Artists => "Artists",
@@ -89,7 +93,9 @@ enum Entry {
     ShuffleQueue,
     RandomisePlay,
     Queue(mpd::QueueSong),
-    Remove(mpd::QueueSong),
+    PlayQueue(u64),
+    NextQueue(u64),
+    Remove(u64),
     Artist(String),
     Album(String),
     Song(mpd::Song),
@@ -124,7 +130,10 @@ impl Entry {
             Self::ResetWindow => "Reset Window Size",
             Self::Clear => "Clear Queue",
             Self::Cancel => "Cancel",
-            Self::Queue(s) | Self::Remove(s) => &s.song.title,
+            Self::Queue(s) => &s.song.title,
+            Self::PlayQueue(_) => "Play Now",
+            Self::NextQueue(_) => "Play Next",
+            Self::Remove(_) => "Remove from Queue",
             Self::Artist(n) | Self::Album(n) | Self::Playlist(n) => n,
             Self::Folder(path) => friendly(path),
             Self::Song(s) => &s.title,
@@ -180,6 +189,8 @@ impl Entry {
             Self::Song(_)
                 | Self::Queue(_)
                 | Self::Remove(_)
+                | Self::PlayQueue(_)
+                | Self::NextQueue(_)
                 | Self::ShuffleQueue
                 | Self::RandomisePlay
                 | Self::Action(_, _)
@@ -199,11 +210,11 @@ impl Entry {
         )
     }
     fn is_song(&self) -> bool {
-        matches!(self, Self::Song(_) | Self::Queue(_) | Self::Remove(_))
+        matches!(self, Self::Song(_) | Self::Queue(_))
     }
     fn queue_position(&self) -> i32 {
         match self {
-            Self::Queue(s) | Self::Remove(s) => i32::try_from(s.position).unwrap_or(-1),
+            Self::Queue(s) => i32::try_from(s.position).unwrap_or(-1),
             _ => -1,
         }
     }
@@ -220,6 +231,7 @@ enum Mutation {
     Setting(mpd::PlaybackSetting),
     Source(mpd::QueueSource, mpd::QueueAction),
     PlayQueue(u64),
+    NextQueue(u64),
     Remove(u64),
     Clear,
     ShuffleQueue,
@@ -230,6 +242,7 @@ impl Mutation {
         match self {
             Self::Source(source, action) => mpd::queue_source(source, *action),
             Self::PlayQueue(id) => mpd::play_queue_id(*id),
+            Self::NextQueue(id) => mpd::move_queue_next(*id),
             Self::Remove(id) => mpd::remove_queue_id(*id),
             Self::Clear => mpd::clear_queue(),
             Self::AddToPlaylist(name, file) => mpd::add_to_playlist(name, file),
@@ -254,6 +267,7 @@ impl Mutation {
             }
             Self::ShuffleQueue => Some("Queue shuffled"),
             Self::Remove(_) => Some("Removed from queue"),
+            Self::NextQueue(_) => Some("Queue reordered"),
             Self::Clear => Some("Queue cleared"),
             Self::Setting(S::Repeat(true)) => Some("Repeat On"),
             Self::Setting(S::Repeat(false)) => Some("Repeat Off"),
@@ -396,8 +410,18 @@ impl Browser {
             Entry::Navigate(_, view) => self.push(view, app, tx),
             Entry::ShuffleQueue => self.mutate(Mutation::ShuffleQueue, app, tx),
             Entry::RandomisePlay => self.mutate(Mutation::RandomisePlay, app, tx),
-            Entry::Queue(song) => self.mutate(Mutation::PlayQueue(song.id), app, tx),
-            Entry::Remove(song) => self.mutate(Mutation::Remove(song.id), app, tx),
+            Entry::Queue(song) => self.push(
+                View::QueueSong {
+                    id: song.id,
+                    file: song.song.file,
+                    title: song.song.title,
+                },
+                app,
+                tx,
+            ),
+            Entry::PlayQueue(id) => self.mutate(Mutation::PlayQueue(id), app, tx),
+            Entry::NextQueue(id) => self.mutate(Mutation::NextQueue(id), app, tx),
+            Entry::Remove(id) => self.mutate(Mutation::Remove(id), app, tx),
             Entry::Clear => self.mutate(Mutation::Clear, app, tx),
             Entry::Cancel => self.back(app, tx),
             Entry::PlaylistTarget(name, file) => {
@@ -446,7 +470,12 @@ impl Browser {
                 tx,
             ),
             Entry::Action(_, action) => {
-                if let View::Actions(source, _) = self.view() {
+                let source = match self.view() {
+                    View::Actions(source, _) => Some(source),
+                    View::QueueSong { file, .. } => Some(mpd::QueueSource::Song(file)),
+                    _ => None,
+                };
+                if let Some(source) = source {
                     self.mutate(Mutation::Source(source, action), app, tx);
                 }
             }
@@ -474,7 +503,7 @@ impl Browser {
         // Cached queue rows may have changed in rmpc while a child page was open.
         if matches!(
             self.view(),
-            View::Queue | View::RemoveQueue | View::PlaylistSongs(_) | View::AddToPlaylist(_)
+            View::Queue | View::PlaylistSongs(_) | View::AddToPlaylist(_)
         ) {
             self.fetch(app, tx, self.offset, false);
         } else {
@@ -592,7 +621,10 @@ impl Browser {
                     // Restore the action/home menu before saving it in navigation history.
                     self.rows = std::mem::take(&mut self.mutation_rows);
                     self.push(View::NowPlaying, app, tx);
-                } else if matches!(mutation, Mutation::AddToPlaylist(_, _)) {
+                } else if matches!(
+                    mutation,
+                    Mutation::AddToPlaylist(_, _) | Mutation::Remove(_)
+                ) {
                     self.back(app, tx);
                 } else if matches!(mutation, Mutation::Clear) {
                     // Leave the confirmation and action pages, returning to the live queue.
@@ -612,7 +644,7 @@ impl Browser {
         }
     }
     fn refresh_queue(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>) {
-        if !self.mutating && matches!(self.view(), View::Queue | View::RemoveQueue) {
+        if !self.mutating && matches!(self.view(), View::Queue) {
             self.fetch(app, tx, self.offset, false);
         }
     }
@@ -651,7 +683,6 @@ fn fetch_last(view: &View) -> Result<(usize, Vec<Entry>), String> {
     use mpd::QueueSource as S;
     let count = match view {
         View::Queue => Some(mpd::queue_length()?.saturating_add(1)),
-        View::RemoveQueue => Some(mpd::queue_length()?),
         View::Songs => Some(mpd::library_length()?),
         View::ArtistSongs(name) => Some(mpd::source_length(&S::Artist(name.clone()))?),
         View::AlbumSongs(name, artist) => {
@@ -769,7 +800,6 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
         View::QueueActions => page(
             vec![
                 Entry::ShuffleQueue,
-                Entry::Navigate("Remove from Queue", View::RemoveQueue),
                 Entry::Navigate("Clear Queue…", View::ConfirmClear),
             ],
             offset,
@@ -891,10 +921,16 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
             );
             rows
         }
-        View::RemoveQueue => mpd::queue_songs(offset, limit)?
-            .into_iter()
-            .map(Entry::Remove)
-            .collect(),
+        View::QueueSong { id, file, .. } => page(
+            vec![
+                Entry::PlayQueue(*id),
+                Entry::NextQueue(*id),
+                Entry::Action("Add to Queue", A::Append),
+                Entry::Navigate("Add to Playlist", View::AddToPlaylist(file.clone())),
+                Entry::Remove(*id),
+            ],
+            offset,
+        ),
         View::NowPlaying => Vec::new(),
     })
 }
@@ -1125,6 +1161,68 @@ mod tests {
         assert_eq!(browser.rows[0].display_label(&app), "Always on Top [Off]");
         assert_eq!(browser.view(), View::Window);
         assert!(rx.try_recv().is_err());
+
+        // Opening Up Next is navigation only. Duplicate files retain distinct IDs.
+        for action in [0, 1, 2, 4] {
+            let (tx, rx) = mpsc::channel();
+            let mut browser = Browser {
+                stack: vec![View::Queue],
+                rows: [7, 42]
+                    .into_iter()
+                    .map(|id| {
+                        Entry::Queue(mpd::QueueSong {
+                            id,
+                            position: 0,
+                            song: mpd::Song {
+                                file: "same.flac".into(),
+                                title: "Song".into(),
+                                ..Default::default()
+                            },
+                        })
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            browser.open(1, &app, &tx);
+            let Job::Fetch(request) = rx.try_recv().unwrap() else {
+                panic!("opening a song must not mutate")
+            };
+            let rows = fetch(&request.view, request.offset).unwrap();
+            assert_eq!(
+                rows.iter().map(Entry::label).collect::<Vec<_>>(),
+                [
+                    "Play Now",
+                    "Play Next",
+                    "Add to Queue",
+                    "Add to Playlist",
+                    "Remove from Queue"
+                ]
+            );
+            browser.complete(&app, &tx, request, Ok(rows));
+            browser.open(action, &app, &tx);
+            let Job::Mutate(mutation, generation) = rx.try_recv().unwrap() else {
+                panic!("expected action")
+            };
+            assert!(match (action, &mutation) {
+                (0, Mutation::PlayQueue(42))
+                | (1, Mutation::NextQueue(42))
+                | (4, Mutation::Remove(42)) => true,
+                (2, Mutation::Source(mpd::QueueSource::Song(file), mpd::QueueAction::Append)) =>
+                    file == "same.flac",
+                _ => false,
+            });
+            if action == 4 {
+                browser.finish(&app, &tx, generation, mutation, Ok(()));
+                assert_eq!(browser.view(), View::Queue);
+                assert!(matches!(
+                    rx.try_recv().unwrap(),
+                    Job::Fetch(Request {
+                        view: View::Queue,
+                        ..
+                    })
+                ));
+            }
+        }
     }
 
     #[test]
@@ -1281,7 +1379,7 @@ mod tests {
         let rows = fetch(&View::QueueActions, 0).unwrap();
         assert_eq!(
             rows.iter().map(Entry::label).collect::<Vec<_>>(),
-            ["Shuffle Queue", "Remove from Queue", "Clear Queue…"]
+            ["Shuffle Queue", "Clear Queue…"]
         );
         assert!(matches!(rows[0], Entry::ShuffleQueue));
         assert!(rows[0].is_leaf() && rows[0].is_shuffle());
