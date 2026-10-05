@@ -108,8 +108,8 @@ impl Entry {
     fn home_menu() -> Vec<Self> {
         vec![
             Self::Navigate("Music", View::Music),
-            Self::ShuffleQueue,
             Self::RandomisePlay,
+            Self::ShuffleQueue,
             Self::Navigate("Queue / Up Next", View::Queue),
             Self::Navigate("Now Playing", View::NowPlaying),
             Self::Navigate("Settings", View::Settings),
@@ -1305,8 +1305,8 @@ mod tests {
             rows.iter().map(Entry::label).collect::<Vec<_>>(),
             [
                 "Music",
-                "Shuffle Queue",
                 "Randomise Play",
+                "Shuffle Queue",
                 "Queue / Up Next",
                 "Now Playing",
                 "Settings"
