@@ -143,6 +143,37 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn export_validates_identity_and_preserves_original_cache() {
+        let root = std::env::temp_dir().join(format!("ipod-export-{:016x}", rand::random::<u64>()));
+        let cache = Cache {
+            root: root.join("cache"),
+        };
+        let music = root.join("music");
+        fs::create_dir_all(&music).unwrap();
+        fs::write(music.join("song.flac"), []).unwrap();
+        let store = super::super::local::Store::new(music.clone());
+        let track = Track::new("song.flac", "Song", "Artist", "", 10.0);
+        let lyrics = Lyrics::Synced(super::super::parser::parse("[00:01.234]Words"));
+        cache.save(&track, &lyrics).unwrap();
+        let source = cache.root.join(format!("{}.json", key(&track)));
+        let original = fs::read(&source).unwrap();
+        let (exported_track, exported_lyrics) = export_entry(&source).unwrap();
+        store
+            .export(&exported_track.file, &exported_lyrics, true)
+            .unwrap();
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(store.load(&track.file).unwrap(), Some(lyrics));
+        let wrong_name = cache.root.join("wrong.json");
+        fs::copy(&source, &wrong_name).unwrap();
+        assert!(export_entry(&wrong_name).is_err());
+        let mut entry: Entry = serde_json::from_slice(&original).unwrap();
+        entry.version = 2;
+        fs::write(&source, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(export_entry(&source).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn expired_misses_are_retried_but_downloads_are_kept() {
         let root =
             std::env::temp_dir().join(format!("ipod-lyrics-expiry-{:016x}", rand::random::<u64>()));

@@ -2,15 +2,25 @@
 
 ## Lookup, privacy and offline behavior
 
-Only the current track is looked up, once per track change—not every elapsed-time
-update and never as a library-wide scan. This also happens if the lyrics panel is
-closed, so switching panels is instant once the result arrives.
+Only the current track is resolved, never as a library-wide scan. This also
+happens with the lyrics panel closed. Source precedence is:
 
-1. Read the local per-track cache first, without needing a network connection.
-2. GET `https://lrclib.net/api/get` using title, artist, album and duration when known.
-3. If no suitable lyrics exist, GET `/api/search` and validate every candidate.
-4. Prefer valid synced LRC, otherwise plain text; show `Instrumental` or
-   `No lyrics available` when appropriate.
+1. Authoritative UTF-8 `.lrc` beside the audio file under `IPOD_MUSIC_DIR`.
+2. Disposable per-track provider cache in Application Support.
+3. GET `https://lrclib.net/api/get`, then `/api/search` only if needed.
+
+A local file bypasses both cache and online lookup, including an empty local file.
+Read/encoding/path errors fail closed (log + no lyrics), rather than silently
+substituting online lyrics for maintained local work. Without `IPOD_MUSIC_DIR`,
+the previous cache/provider behavior remains. See [SIDECARS.md](SIDECARS.md) for
+configuration, reload, safe cache export and filesystem constraints.
+
+The worker checks the active sidecar every two seconds, even when paused. It
+publishes only changed results, without resetting manual browsing on every poll.
+Provider results/errors are memoized per active track: local reload is not an HTTP
+retry loop. A second local check after a provider lookup catches files saved while
+the network request was in flight. Existing generation guards reject old tracks.
+Synced/plain/instrumental/missing presentation is unchanged.
 
 Title and artist must match (case/whitespace normalization only). Album must match
 when known and duration must be within two seconds when known. Remix/live/cover
@@ -40,9 +50,11 @@ lyrics still display, but offline persistence is not guaranteed; the error is lo
 Deleting this directory clears the lyrics cache. Do not commit or distribute it:
 lyrics retain their owners' rights, and the cache contains personal track metadata.
 
-Original music files are never read or modified by the lyrics service. There is
-no sidecar-file import, tagging, settings UI or additional online provider. The
-existing application cache is the local-lyrics source in this version.
+Audio contents are never read or modified by the lyrics service (file metadata is
+checked for safe path resolution). Normal playback only reads sidecars; explicit
+export can create a new sidecar but never replace one. Application Support stores
+provider data only, not local edits. No tagging, editor or additional provider is
+implemented in Phase 1.
 
 ## Synced rendering
 
@@ -73,7 +85,7 @@ All directional inputs share the browser controller; g/G still jump to the
 first/last item. Lyrics, volume and seeking keep their existing boundaries.
 
 Each track change immediately clears the displayed lyrics and advances a generation
-counter. Old queued requests are coalesced; old results cannot overwrite the current
+counter. Old queued track requests are coalesced; old results cannot overwrite the current
 song, even through an A → B → A change. Network and disk operations run off the UI
 thread. Neither the MPD protocol nor its polling workers were replaced.
 

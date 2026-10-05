@@ -38,8 +38,10 @@ Engineering overview, audit findings and verification results:
 - Queue Actions contains Shuffle Queue and Clear Queue. Clear Queue preserves
   the current song; stable queue IDs back per-song actions.
 - Direct five-second seeking, draggable progress bar and consistent Vim-style controls.
-- Vertical Now Playing/Lyrics carousel with synced LRCLIB lyrics, plain fallback
-  and a persistent offline cache; [lyrics behavior and privacy](docs/LYRICS.md).
+- Vertical Now Playing/Lyrics carousel with authoritative local `.lrc` sidecars,
+  automatic external-edit reload, and LRCLIB/cache fallback. Set `IPOD_MUSIC_DIR`
+  to your absolute music root; [sidecars and safe cache export](docs/SIDECARS.md),
+  [lyrics behavior and privacy](docs/LYRICS.md).
 - Single-click row selection; unified double-click, Enter/l/Right and centre activation.
 - Selectable/draggable MPD mixer-volume slider, global `,`/`.` volume shortcuts,
   crossfade, repeat and random mode (never macOS system volume).

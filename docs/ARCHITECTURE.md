@@ -29,10 +29,15 @@ Strict all-target Clippy reports ten existing style/iterator warnings.
   file-identity guard at delivery. Eight-entry LRU including misses; thumbnails
   at most 256×256 RGBA (about 2 MiB cache pixel storage), decode allocation limit
   64 MiB. These bounds exclude decoder overhead and temporary source buffers.
-- `lyrics/`: HTTP matching, LRC parsing, atomic disk cache, UI presentation.
-  Generation tickets reject stale completions including A→B→A. Cache/network work
-  is off-thread; active-line selection is binary search on MPD elapsed time.
-  LRCLIB requests/body sizes/timeouts are bounded; no library-wide fetching.
+- `lyrics/`: local sidecars, source resolution, HTTP matching, LRC parsing,
+  disposable provider cache and UI presentation. `local.rs` confines paths under
+  explicit `IPOD_MUSIC_DIR`; `resolver.rs` prioritizes sidecars before a memoized
+  cache/provider fallback. A two-second worker timeout reloads external edits even
+  while paused; local files never enter the provider cache. Explicit CLI export
+  uses atomic no-replace publication and leaves cached originals intact.
+  Generation tickets reject stale completions including A→B→A. All file/network
+  work is off-thread; active-line selection is binary search on MPD elapsed time.
+  See [SIDECARS.md](SIDECARS.md) for filesystem limits and the export workflow.
 - `ui/`: shell and navigation dispatch in `app.slint`; wheel, Now Playing, lyrics,
   marquee, volume and passive texture/status components own presentation only.
   Rust supplies snapshots/models; Slint callbacks enqueue work rather than doing

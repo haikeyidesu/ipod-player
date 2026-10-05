@@ -257,6 +257,48 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn unsuitable_cached_data_cannot_be_exported() {
+        use super::super::parser::LyricLine;
+        for timestamp in [-1.0, f64::NAN, f64::INFINITY, 86401.0] {
+            assert!(
+                export_text(&Lyrics::Synced(vec![LyricLine {
+                    timestamp,
+                    text: "Words".into()
+                }]))
+                .is_err()
+            );
+        }
+        for text in ["[00:04]Injected", "a\rb", "a\0b"] {
+            assert!(
+                export_text(&Lyrics::Synced(vec![LyricLine {
+                    timestamp: 1.0,
+                    text: text.into()
+                }]))
+                .is_err()
+            );
+        }
+        assert!(export_text(&Lyrics::Missing).is_err());
+        assert!(export_text(&Lyrics::Instrumental).is_err());
+        assert!(export_text(&Lyrics::Synced(vec![])).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_directory_loads_but_export_fails_without_temp_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, store) = fixture();
+        let directory = root.join("Album");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(store.load("Album/Song.flac").unwrap(), None);
+        let lyrics = Lyrics::Synced(parser::parse("[00:01]Words"));
+        let result = store.export("Album/Song.flac", &lyrics, true);
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_and_read_only_files_are_not_overwritten() {
@@ -264,6 +306,10 @@ mod tests {
         let (root, store) = fixture();
         symlink(root.join("Album"), root.join("Link")).unwrap();
         assert!(store.path("Link/Song.flac").is_err());
+        symlink(root.join("Album/Song.flac"), root.join("linked.flac")).unwrap();
+        assert!(store.path("linked.flac").is_err());
+        symlink(root.parent().unwrap(), root.join("Outside")).unwrap();
+        assert!(store.path("Outside/song.flac").is_err());
         let target = store.path("Album/Song.flac").unwrap();
         symlink(root.join("missing"), &target).unwrap();
         assert!(store.load("Album/Song.flac").is_err());
