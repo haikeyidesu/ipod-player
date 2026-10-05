@@ -1,7 +1,9 @@
 //! Lyrics are independent of the MPD protocol. Only the current track is fetched.
 mod cache;
 mod client;
+mod local;
 mod parser;
+mod resolver;
 
 use crate::AppWindow;
 use parser::{LyricLine, active_line};
@@ -16,6 +18,35 @@ use std::{
         mpsc,
     },
 };
+
+/// CLI-only migration: preview one selected cache entry unless --write is explicit.
+/// Runs before Slint/MPD initialization, so export never changes playback.
+pub fn export_command() -> Result<bool, String> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_none_or(|arg| arg != "--export-lyrics") {
+        return Ok(false);
+    }
+    if !(args.len() == 2 || (args.len() == 3 && args[2] == "--write")) {
+        return Err(
+            "Usage: ipod-player --export-lyrics CACHE.json [--write]; set IPOD_MUSIC_DIR".into(),
+        );
+    }
+    let store = local::Store::configured()
+        .ok_or("Set IPOD_MUSIC_DIR to the absolute local music directory")?;
+    let (track, lyrics) = cache::export_entry(std::path::Path::new(&args[1]))?;
+    let write = args.len() == 3;
+    let path = store.export(&track.file, &lyrics, write)?;
+    println!(
+        "{}: {} (cache unchanged)",
+        if write {
+            "Exported"
+        } else {
+            "Would create; rerun with --write"
+        },
+        path.display()
+    );
+    Ok(true)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
@@ -166,47 +197,57 @@ impl LyricsService {
         let current = generation.clone();
         std::thread::spawn(move || {
             let cache = cache::Cache::application();
+            let local = local::Store::configured();
             let mut client = client::Client::new();
-            while let Ok((mut ticket, mut track)) = rx.recv() {
-                while let Ok(newer) = rx.try_recv() {
-                    (ticket, track) = newer;
+            let mut active = None;
+            let mut fallback = None;
+            let mut delivered = None;
+            loop {
+                // Independent of playback polling: edits reload even while paused
+                // and no Slint properties change. All filesystem work stays here.
+                match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                    Ok(mut request) => {
+                        while let Ok(newer) = rx.try_recv() {
+                            request = newer;
+                        }
+                        active = Some(request);
+                        fallback = None;
+                        delivered = None;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
+                let Some((ticket, track)) = active.as_ref() else {
+                    continue;
+                };
+                let ticket = *ticket;
                 let valid = || current.load(Ordering::Acquire) == ticket;
                 if !valid() {
                     continue;
                 }
-                let cached = cache.as_ref().and_then(|cache| cache.load(&track));
-                let lyrics = if let Some(lyrics) = cached {
-                    lyrics
-                } else {
-                    match client
+                let result = resolver::resolve(local.as_ref(), track, &mut fallback, || {
+                    if let Some(lyrics) = cache.as_ref().and_then(|cache| cache.load(track)) {
+                        return Ok(lyrics);
+                    }
+                    let lyrics = client
                         .as_mut()
                         .map_err(|e| e.to_string())
-                        .and_then(|c| c.fetch(&track, &valid))
+                        .and_then(|c| c.fetch(track, &valid))?;
+                    if let Some(cache) = &cache
+                        && let Err(error) = cache.save(track, &lyrics)
                     {
-                        Ok(lyrics) => {
-                            if let Some(cache) = &cache {
-                                if let Err(error) = cache.save(&track, &lyrics) {
-                                    eprintln!("Lyrics cache write failed: {error}");
-                                }
-                            } else {
-                                eprintln!(
-                                    "Lyrics cache unavailable: no application-support directory"
-                                );
-                            }
-                            lyrics
-                        }
-                        Err(error) => {
-                            if valid() {
-                                eprintln!("Lyrics: {error}");
-                            }
-                            Lyrics::Missing
-                        }
+                        eprintln!("Lyrics cache write failed: {error}");
                     }
-                };
-                if !valid() {
+                    Ok(lyrics)
+                });
+                if !valid() || delivered.as_ref() == Some(&result) {
                     continue;
                 }
+                delivered = Some(result.clone());
+                let lyrics = result.unwrap_or_else(|error| {
+                    eprintln!("Lyrics: {error}");
+                    Lyrics::Missing
+                });
                 let weak = weak.clone();
                 // All file/network/parsing/serialization work stays on this worker.
                 let payload = serde_json::to_string(&lyrics).unwrap_or_default();
@@ -229,7 +270,7 @@ impl LyricsService {
     }
 
     /// Call after setting elapsed. Stable tracks only update active-line selection;
-    /// they never enqueue another HTTP/cache request, even while disconnected.
+    /// the worker independently reloads local files without repeating provider lookup.
     pub fn update(&self, app: &AppWindow, track: Track, song_id: &str) {
         let mut state = self.presentation.borrow_mut();
         if state.track.as_ref() != Some(&track) || state.song_id != song_id {

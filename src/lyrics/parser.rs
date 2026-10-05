@@ -24,6 +24,7 @@ pub fn parse(lrc: &str) -> Vec<LyricLine> {
         .lines()
         .filter_map(|line| {
             line.trim()
+                .trim_start_matches('\u{feff}')
                 .strip_prefix("[offset:")?
                 .strip_suffix(']')?
                 .trim()

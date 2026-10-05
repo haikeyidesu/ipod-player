@@ -1,4 +1,5 @@
-//! Durable per-user cache; never reads or modifies original music files.
+//! Disposable provider cache, not the authoritative lyrics store. Sidecars live
+//! beside audio files; export is explicit and never deletes these cached originals.
 use super::{Lyrics, Track};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,6 +38,21 @@ pub fn key(track: &Track) -> String {
         "{:x}",
         Sha256::digest(serde_json::to_vec(track).expect("serializable track"))
     )
+}
+
+/// Read one explicitly selected v1 entry for non-destructive export. Never scan
+/// or bulk-write a music library based on cached metadata.
+pub fn export_entry(path: &std::path::Path) -> Result<(Track, Lyrics), String> {
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES {
+        return Err("Cache entry exceeds size limit".into());
+    }
+    let entry: Entry =
+        serde_json::from_reader(file.take(MAX_BYTES + 1)).map_err(|e| e.to_string())?;
+    if entry.version != 1 || path.file_stem().and_then(|s| s.to_str()) != Some(&key(&entry.track)) {
+        return Err("Cache version or hashed track identity does not match".into());
+    }
+    Ok((entry.track, entry.lyrics))
 }
 
 impl Cache {

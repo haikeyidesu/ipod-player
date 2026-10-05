@@ -72,6 +72,9 @@ fn settings_changed(previous: Option<&mpd::PlayerState>, current: &mpd::PlayerSt
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if lyrics::export_command()? {
+        return Ok(());
+    }
     let app = AppWindow::new()?;
     // One worker serializes transport commands and reads state. Library requests
     // run on their own worker and can request an immediate state refresh.
