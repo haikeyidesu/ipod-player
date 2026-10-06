@@ -27,7 +27,7 @@ entire paginated library. This picker does not affect the active queue.
 
 The **Add Selected** row shows the marked-song count. A batch error keeps songs
 that were not added selected, so retrying does not duplicate successful additions.
-Outside this picker, Space remains Play/Pause.
+Outside this picker, Space is unbound; use the click-wheel play button or a media key for playback.
 
 ## MPD mixer volume
 
@@ -45,7 +45,6 @@ Outside this picker, Space remains Play/Pause.
 |-----|--------|-------------|
 | `[` | Previous | Restart after 3 seconds elapsed; otherwise previous track |
 | `]` | Next | Next track |
-| `Space` | Play/Pause | Toggle play/pause |
 | `n` | Next | Alias for next track |
 | `p` | Previous | Alias for previous track |
 
@@ -84,7 +83,7 @@ The click wheel has four sections and a center button:
 | `↓` / `↑` | Seek forward / backward 5 seconds | Next / previous panel; scroll plain lyrics |
 | `n` / `]` | Next song | Next song |
 | `p` / `[` | Restart after 3 seconds, otherwise previous | Same |
-| Space / play button | Play/pause | Play/pause |
+| Play button | Play/pause | Play/pause |
 
 - Double-click the artwork/metadata area to activate the carousel with a mouse.
   Mouse-wheel or rotational-wheel scrolling then navigates the panels. Outside

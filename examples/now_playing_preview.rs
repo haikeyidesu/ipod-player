@@ -143,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     key(&app, "n");
     key(&app, "p");
     key(&app, " ");
-    assert_eq!(*transports.borrow(), ["next", "previous", "play-pause"]);
+    assert_eq!(*transports.borrow(), ["next", "previous"]);
     assert_eq!(seeks.borrow().len(), 2);
     key(&app, "h");
     assert_eq!(app.get_carousel_page(), 0);

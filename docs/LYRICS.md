@@ -125,7 +125,7 @@ It renders fictional fixture text at 75%, 100% and 150% under ignored `target/`.
       long metadata marquees. Enter or MENU/h resumes current-line syncing;
       MENU/h again returns, then exits carousel.
 - [ ] Verify actual synced lyrics before/at a timestamp, after forward/backward
-      bar seeking, while paused and after resume. n/p/Space work in both panels.
+      bar seeking, while paused and after resume. n/p and the play button work in both panels.
 - [ ] Plain lyrics: Enter/centre/double-click to browse; scroll to both ends
       with keyboard/mouse/virtual wheel. Enter or h/MENU leaves browsing without
       losing the scroll position; another h/MENU returns to playback. Confirm a

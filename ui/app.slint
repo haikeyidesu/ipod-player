@@ -952,9 +952,6 @@ export component AppWindow inherits Window {
             } else if event.text == "]" {
                 if !root.next-pressed { root.dispatch-transport("next"); }
                 root.next-pressed = true;
-            } else if event.text == Key.Space {
-                if !root.play-pressed { root.dispatch-transport("play-pause"); }
-                root.play-pressed = true;
             } else if event.text == "n" {
                 // 'n' for next track
                 if !root.next-pressed { root.dispatch-transport("next"); }
@@ -973,7 +970,6 @@ export component AppWindow inherits Window {
             if event.text == "p" { root.prev-pressed = false; return accept; }
             if event.text == "[" { root.prev-pressed = false; return accept; }
             if event.text == "]" { root.next-pressed = false; return accept; }
-            if event.text == Key.Space { root.play-pressed = false; return accept; }
             if event.text == "l" || event.text == Key.RightArrow || event.text == Key.Return {
                 root.next-pressed = false;
                 root.center-pressed = false;
