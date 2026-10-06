@@ -146,14 +146,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &seeks.borrow()[2..],
         &[("42".into(), 88.0), ("42".into(), 83.0)]
     );
-    key(&app, "n");
+    key(&app, "n"); // Unbound, including in Lyrics.
     key(&app, "p");
     key(&app, "<");
     key(&app, ">");
     key(&app, " ");
     assert_eq!(
         *transports.borrow(),
-        ["next", "play-pause", "previous", "next"]
+        ["play-pause", "previous", "next"]
     );
     assert_eq!(seeks.borrow().len(), 4);
     key(&app, "h");

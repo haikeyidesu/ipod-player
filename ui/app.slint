@@ -991,7 +991,7 @@ export component AppWindow inherits Window {
                 if !root.prev-pressed { root.dispatch-transport("previous"); }
                 root.prev-pressed = true;
             } else if event.text == ">" || (event.modifiers.shift && event.text == ".")
-                || event.text == "]" || event.text == "n" {
+                || event.text == "]" {
                 if !root.next-pressed { root.dispatch-transport("next"); }
                 root.next-pressed = true;
             } else if event.text == "," {
@@ -1004,7 +1004,7 @@ export component AppWindow inherits Window {
             return accept;
         }
         key-released(event) => {
-            if event.text == "n" || event.text == ">" || event.text == "]"
+            if event.text == ">" || event.text == "]"
                 || (event.modifiers.shift && event.text == ".") {
                 root.next-pressed = false;
                 return accept;

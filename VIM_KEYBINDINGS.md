@@ -47,7 +47,6 @@ Outside this picker, Space is unbound; use `p`, the click-wheel play button or a
 | `p` | Play/Pause | Toggle playback |
 | `<` / `>` | Previous / next | Previous restarts after 3 seconds elapsed; otherwise changes track |
 | `[` / `]` | Previous / next | Existing aliases |
-| `n` | Next | Existing alias |
 
 ## Click Wheel Navigation
 
@@ -83,7 +82,7 @@ The click wheel has four sections and a center button:
 | `k` | Seek forward 5 seconds | Previous panel; scroll up in plain lyrics |
 | `↓` / `↑` | Seek forward / backward 5 seconds | Next / previous panel; scroll plain lyrics |
 | `f` / `b` | Seek forward / backward 5 seconds | Same |
-| `n` / `>` / `]` | Next song | Next song |
+| `>` / `]` | Next song | Next song |
 | `<` / `[` | Restart after 3 seconds, otherwise previous | Same |
 | `p` / Play button | Play/pause | Play/pause |
 
