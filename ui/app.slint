@@ -7,6 +7,7 @@ import { VolumeSlider } from "volume-slider.slint";
 import { MarqueeLabel } from "marquee-label.slint";
 import { LcdTexture } from "lcd-texture.slint";
 import { StatusStrip } from "status-strip.slint";
+import { PlaylistEntry } from "playlist-entry.slint";
 
 // The display owns its menu selection; it does not know about the wheel yet.
 component DisplayPanel inherits Rectangle {
@@ -663,6 +664,15 @@ export component AppWindow inherits Window {
     out property <int> lyrics-scroll-max: shell.lyrics-scroll-max;
     callback lyrics-delivered(string, string);
     callback refresh-lyrics();
+    in-out property <bool> playlist-entry-open: false;
+    in-out property <string> playlist-entry-text: "";
+    in-out property <string> playlist-entry-error: "";
+    callback playlist-name-submitted(string);
+    callback playlist-name-cancelled();
+    changed playlist-entry-open => {
+        if root.playlist-entry-open { playlist-entry.focus(); }
+        else { navigation.focus(); }
+    }
     preferred-width: 420px;
     preferred-height: 640px;
     min-width: 315px;
@@ -835,6 +845,7 @@ export component AppWindow inherits Window {
         }
     }
     function move-selection(delta: int) {
+        if root.playlist-entry-open { return; }
         if root.volume-page {
             root.change-volume(delta);
         } else if root.page-title == "Now Playing" && !root.browse-active {
@@ -852,6 +863,10 @@ export component AppWindow inherits Window {
         }
     }
     function open-selected() {
+        if root.playlist-entry-open {
+            root.playlist-name-submitted(root.playlist-entry-text);
+            return;
+        }
         if root.page-title == "Now Playing" && !root.browse-active {
             root.scrubbing = false;
             if root.carousel-page == 1 && (root.lyrics-plain != "" || root.lyrics-lines.length > 0) {
@@ -866,6 +881,7 @@ export component AppWindow inherits Window {
         }
     }
     function back() {
+        if root.playlist-entry-open { root.playlist-name-cancelled(); return; }
         if root.scrubbing { root.scrubbing = false; }
         else if root.lyrics-manual {
             root.lyrics-manual = false;
@@ -876,9 +892,16 @@ export component AppWindow inherits Window {
         else { root.browse-back(); }
     }
 
-    refocus-navigation => { navigation.focus(); }
+    refocus-navigation => {
+        if root.playlist-entry-open { playlist-entry.focus(); }
+        else { navigation.focus(); }
+    }
     navigation := FocusScope {
         key-pressed(event) => {
+            if root.playlist-entry-open {
+                if event.text == Key.Escape { root.playlist-name-cancelled(); return accept; }
+                return reject;
+            }
             // Leave macOS shortcuts (Cmd, Ctrl, Option) untouched.
             if event.modifiers.meta || event.modifiers.control || event.modifiers.alt {
                 return reject;
@@ -1021,6 +1044,19 @@ export component AppWindow inherits Window {
             next-pressed: root.next-pressed;
             play-pressed: root.play-pressed;
             center-pressed: root.center-pressed;
+        }
+
+        playlist-entry := PlaylistEntry {
+            visible: root.playlist-entry-open;
+            x: shell.x + 57px * root.ui-scale;
+            y: shell.y + 39px * root.ui-scale;
+            width: 306px * root.ui-scale;
+            height: 286px * root.ui-scale;
+            ui-scale: root.ui-scale;
+            name <=> root.playlist-entry-text;
+            error: root.playlist-entry-error;
+            submit(name) => { root.playlist-name-submitted(name); }
+            cancel => { root.playlist-name-cancelled(); }
         }
 
         // Passive 2x clear-coat, drawn in the same 420x640 coordinates as the

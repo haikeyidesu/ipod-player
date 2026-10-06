@@ -1,0 +1,62 @@
+// Keyboard-only naming page inside the existing LCD; MENU/Escape cancels.
+export component PlaylistEntry inherits Rectangle {
+    in property <float> ui-scale: 1;
+    in-out property <string> name;
+    in property <string> error;
+    callback submit(string);
+    callback cancel();
+    background: @linear-gradient(180deg, #f8fcfe 0%, #edf6fa 100%);
+    border-radius: 4px * root.ui-scale;
+    clip: true;
+    forward-focus: input;
+
+    TouchArea {
+        clicked => { input.focus(); }
+        scroll-event(event) => { return accept; }
+    }
+    Text {
+        y: 20px * root.ui-scale;
+        width: parent.width;
+        height: 30px * root.ui-scale;
+        text: "New Playlist";
+        font-size: 20px * root.ui-scale;
+        color: #202932;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        x: 16px * root.ui-scale;
+        y: 70px * root.ui-scale;
+        width: parent.width - 32px * root.ui-scale;
+        height: 39px * root.ui-scale;
+        background: white;
+        border-width: 1px * root.ui-scale;
+        border-color: #7597ac;
+        input := TextInput {
+            x: 8px * root.ui-scale;
+            width: parent.width - 16px * root.ui-scale;
+            height: parent.height;
+            text <=> root.name;
+            font-size: 18px * root.ui-scale;
+            color: #202932;
+            single-line: true;
+            accepted => { root.submit(root.name); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.cancel(); return accept; }
+                return reject;
+            }
+        }
+    }
+    Text {
+        x: 12px * root.ui-scale;
+        y: 128px * root.ui-scale;
+        width: parent.width - 24px * root.ui-scale;
+        height: 42px * root.ui-scale;
+        text: root.error == "" ? "Return: Create · MENU: Cancel" : root.error;
+        color: root.error == "" ? #526775 : #aa4240;
+        font-size: 12px * root.ui-scale;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}

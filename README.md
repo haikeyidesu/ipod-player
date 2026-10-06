@@ -25,7 +25,10 @@ Engineering overview, audit findings and verification results:
 - Click-wheel, keyboard and mouse navigation; classic Now Playing artwork/progress.
 - Browse MPD artists, albums, songs, saved playlists and indexed folders.
 - Collection Play/Shuffle replaces the queue; Play Next/Add to Queue preserve it.
-- Song actions include adding to existing saved MPD playlists.
+- Create a saved MPD playlist from Playlists or Add to Playlist: type its name with the
+  keyboard, Return to confirm, Escape/MENU to cancel. An empty playlist briefly uses
+  a library song in the saved playlist and removes it; the active queue is untouched.
+  Failed cleanup is reported in the naming pane. Song actions also add to existing playlists.
 - Shuffle Queue (Home or Queue Actions) reorders only existing entries, preserving
   the current track and playing/paused/stopped state. MPD random mode is unchanged.
 - Randomise Play replaces the queue with the entire MPD library, shuffles and starts

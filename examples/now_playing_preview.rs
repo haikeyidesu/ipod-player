@@ -630,6 +630,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         640,
         image::ColorType::Rgb8,
     )?;
+    // Playlist naming keeps keyboard editing separate from Vim/menu navigation.
+    let names = Rc::new(RefCell::new(Vec::new()));
+    let received = names.clone();
+    let weak = app.as_weak();
+    app.on_playlist_name_submitted(move |name| {
+        received.borrow_mut().push(name.to_string());
+        weak.upgrade().unwrap().set_playlist_entry_open(false);
+    });
+    let cancelled = Rc::new(RefCell::new(0));
+    let received = cancelled.clone();
+    let weak = app.as_weak();
+    app.on_playlist_name_cancelled(move || {
+        *received.borrow_mut() += 1;
+        weak.upgrade().unwrap().set_playlist_entry_open(false);
+    });
+    app.set_playlist_entry_text("".into());
+    app.set_playlist_entry_open(true);
+    let selected_before_entry = app.get_selected_index();
+    for letter in ["M", "i", "j", "k", "x"] {
+        key(&app, letter);
+    }
+    key(&app, slint::platform::Key::Backspace);
+    key(&app, slint::platform::Key::Return);
+    assert_eq!(*names.borrow(), ["Mijk"]);
+    assert_eq!(app.get_selected_index(), selected_before_entry);
+    assert!(!app.get_playlist_entry_open());
+    app.set_playlist_entry_open(true);
+    key(&app, slint::platform::Key::Escape);
+    assert_eq!(*cancelled.borrow(), 1);
+    assert!(!app.get_playlist_entry_open());
+
     // One passive strip replaces its message and restarts the dismissal timer.
     app.invoke_show_status("Added to queue".into());
     assert!(app.get_status_showing());

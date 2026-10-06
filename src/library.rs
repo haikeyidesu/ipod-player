@@ -105,6 +105,7 @@ enum Entry {
     Clear,
     Cancel,
     PlaylistTarget(String, String),
+    NewPlaylist,
     Setting(String, mpd::PlaybackSetting),
     Info(String),
     PinWindow,
@@ -138,6 +139,7 @@ impl Entry {
             Self::Folder(path) => friendly(path),
             Self::Song(s) => &s.title,
             Self::PlaylistTarget(name, _) | Self::Setting(name, _) | Self::Info(name) => name,
+            Self::NewPlaylist => "New Playlist…",
         }
     }
     fn display_label(&self, app: &AppWindow) -> String {
@@ -197,6 +199,7 @@ impl Entry {
                 | Self::Clear
                 | Self::Cancel
                 | Self::PlaylistTarget(_, _)
+                | Self::NewPlaylist
                 | Self::Setting(_, _)
                 | Self::Info(_)
                 | Self::PinWindow
@@ -225,9 +228,11 @@ struct Request {
     offset: usize,
     generation: u64,
     select_last: bool,
+    select_index: Option<usize>,
 }
 enum Mutation {
     AddToPlaylist(String, String),
+    CreatePlaylist(String, Option<String>),
     Setting(mpd::PlaybackSetting),
     Source(mpd::QueueSource, mpd::QueueAction),
     PlayQueue(u64),
@@ -246,6 +251,7 @@ impl Mutation {
             Self::Remove(id) => mpd::remove_queue_id(*id),
             Self::Clear => mpd::clear_queue(),
             Self::AddToPlaylist(name, file) => mpd::add_to_playlist(name, file),
+            Self::CreatePlaylist(name, file) => mpd::create_playlist(name, file.as_deref()),
             Self::Setting(setting) => mpd::set_playback(*setting),
             Self::ShuffleQueue => mpd::shuffle_queue(),
             Self::RandomisePlay => mpd::shuffle_all_songs(),
@@ -259,6 +265,7 @@ impl Mutation {
         }
         match self {
             Self::AddToPlaylist(_, _) => Some("Added to playlist"),
+            Self::CreatePlaylist(_, _) => Some("Playlist created"),
             Self::Source(_, A::Append) => Some("Added to queue"),
             Self::Source(_, A::PlayNext) => Some("Playing next"),
             Self::Source(QueueSource::Song(_), A::PlayNow) => Some("Added to queue"),
@@ -276,6 +283,19 @@ impl Mutation {
             Self::PlayQueue(_) | Self::Setting(_) => None,
         }
     }
+    fn closes_action_menu(&self, view: &View) -> bool {
+        matches!(view, View::Actions(_, _) | View::QueueSong { .. })
+            && matches!(
+                self,
+                Self::Source(_, _)
+                    | Self::PlayQueue(_)
+                    | Self::NextQueue(_)
+                    | Self::Remove(_)
+                    | Self::AddToPlaylist(_, _)
+            )
+            || matches!(view, View::QueueActions) && matches!(self, Self::ShuffleQueue)
+    }
+    #[cfg(test)]
     fn starts_playback(&self) -> bool {
         matches!(
             self,
@@ -286,6 +306,7 @@ impl Mutation {
 }
 enum Job {
     JumpLast(Request),
+    FindPlaylist(Request, String),
     Fetch(Request),
     Mutate(Mutation, u64),
 }
@@ -308,6 +329,8 @@ struct Browser {
     // A mutation must complete before a queue refresh can replace its action page.
     mutating: bool,
     mutation_rows: Vec<Entry>,
+    // None = not naming; Some(None) = empty playlist; Some(Some(file)) = create-and-add.
+    playlist_entry_file: Option<Option<String>>,
 }
 impl Browser {
     fn view(&self) -> View {
@@ -343,6 +366,16 @@ impl Browser {
         app.set_selected_index(self.selected as i32);
     }
     fn fetch(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>, offset: usize, select_last: bool) {
+        self.fetch_with_selection(app, tx, offset, select_last, None);
+    }
+    fn fetch_with_selection(
+        &mut self,
+        app: &AppWindow,
+        tx: &mpsc::Sender<Job>,
+        offset: usize,
+        select_last: bool,
+        select_index: Option<usize>,
+    ) {
         self.offset = offset;
         self.selected = 0;
         self.rows.clear();
@@ -354,9 +387,27 @@ impl Browser {
             offset,
             generation: self.generation,
             select_last,
+            select_index,
         };
         self.show(app, "Loading…");
         if tx.send(Job::Fetch(request)).is_err() {
+            self.loading = false;
+            self.show(app, "Browser worker stopped");
+        }
+    }
+    fn find_created_playlist(&mut self, name: String, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        self.loading = true;
+        self.rows.clear();
+        self.generation += 1;
+        self.show(app, "Loading…");
+        let request = Request {
+            view: self.view(),
+            offset: 0,
+            generation: self.generation,
+            select_last: false,
+            select_index: None,
+        };
+        if tx.send(Job::FindPlaylist(request, name)).is_err() {
             self.loading = false;
             self.show(app, "Browser worker stopped");
         }
@@ -398,8 +449,35 @@ impl Browser {
             self.show(app, "Browser worker stopped — MENU to go back");
         }
     }
+    fn submit_playlist_name(&mut self, name: &str, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if self.mutating || self.playlist_entry_file.is_none() {
+            return;
+        }
+        match mpd::playlist_name(name) {
+            Ok(name) => {
+                app.set_playlist_entry_error("Creating…".into());
+                self.mutate(
+                    Mutation::CreatePlaylist(
+                        name.into(),
+                        self.playlist_entry_file.clone().unwrap(),
+                    ),
+                    app,
+                    tx,
+                );
+            }
+            Err(err) => app.set_playlist_entry_error(err.into()),
+        }
+    }
+    fn cancel_playlist_name(&mut self, app: &AppWindow) {
+        if self.mutating {
+            return;
+        }
+        self.playlist_entry_file = None;
+        app.set_playlist_entry_open(false);
+        app.set_playlist_entry_error("".into());
+    }
     fn open(&mut self, index: i32, app: &AppWindow, tx: &mpsc::Sender<Job>) {
-        if self.loading || index < 0 {
+        if self.loading || self.playlist_entry_file.is_some() || index < 0 {
             return;
         }
         let Some(entry) = self.rows.get(index as usize).cloned() else {
@@ -426,6 +504,16 @@ impl Browser {
             Entry::Cancel => self.back(app, tx),
             Entry::PlaylistTarget(name, file) => {
                 self.mutate(Mutation::AddToPlaylist(name, file), app, tx)
+            }
+            Entry::NewPlaylist => {
+                let file = match self.view() {
+                    View::AddToPlaylist(file) => Some(file),
+                    _ => None,
+                };
+                self.playlist_entry_file = Some(file);
+                app.set_playlist_entry_text("".into());
+                app.set_playlist_entry_error("".into());
+                app.set_playlist_entry_open(true);
             }
             Entry::Setting(_, setting) => self.mutate(Mutation::Setting(setting), app, tx),
             Entry::Info(_) => {}
@@ -482,6 +570,10 @@ impl Browser {
         }
     }
     fn back(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if self.playlist_entry_file.is_some() {
+            self.cancel_playlist_name(app);
+            return;
+        }
         // Avoid executing a second action while the first is still in flight.
         if self.mutating {
             return;
@@ -505,13 +597,13 @@ impl Browser {
             self.view(),
             View::Queue | View::PlaylistSongs(_) | View::AddToPlaylist(_)
         ) {
-            self.fetch(app, tx, self.offset, false);
+            self.fetch_with_selection(app, tx, self.offset, false, Some(self.selected));
         } else {
             self.show(app, "");
         }
     }
     fn jump(&mut self, last: bool, app: &AppWindow, tx: &mpsc::Sender<Job>) {
-        if self.loading || self.view() == View::NowPlaying {
+        if self.loading || self.playlist_entry_file.is_some() || self.view() == View::NowPlaying {
             return;
         }
         if !last {
@@ -527,6 +619,7 @@ impl Browser {
             offset: 0,
             generation: self.generation,
             select_last: true,
+            select_index: None,
         };
         if tx.send(Job::JumpLast(request)).is_err() {
             self.loading = false;
@@ -535,7 +628,7 @@ impl Browser {
     }
 
     fn step(&mut self, delta: i32, app: &AppWindow, tx: &mpsc::Sender<Job>) {
-        if self.loading || self.rows.is_empty() {
+        if self.loading || self.playlist_entry_file.is_some() || self.rows.is_empty() {
             return;
         }
         // Mouse selection and wheel selection must share the same index.
@@ -582,7 +675,10 @@ impl Browser {
                 self.selected = if request.select_last {
                     self.rows.len().saturating_sub(1)
                 } else {
-                    0
+                    request
+                        .select_index
+                        .unwrap_or(0)
+                        .min(self.rows.len().saturating_sub(1))
                 };
                 self.show(
                     app,
@@ -617,30 +713,49 @@ impl Browser {
         }
         match result {
             Ok(()) => {
-                if mutation.starts_playback() {
-                    // Restore the action/home menu before saving it in navigation history.
-                    self.rows = std::mem::take(&mut self.mutation_rows);
-                    self.push(View::NowPlaying, app, tx);
-                } else if matches!(
-                    mutation,
-                    Mutation::AddToPlaylist(_, _) | Mutation::Remove(_)
-                ) {
-                    self.back(app, tx);
-                } else if matches!(mutation, Mutation::Clear) {
-                    // Leave the confirmation and action pages, returning to the live queue.
-                    while self.view() != View::Queue && !self.stack.is_empty() {
-                        self.stack.pop();
-                        self.history.pop();
+                self.rows = std::mem::take(&mut self.mutation_rows);
+                match mutation {
+                    Mutation::CreatePlaylist(name, file) => {
+                        self.playlist_entry_file = None;
+                        app.set_playlist_entry_open(false);
+                        app.set_playlist_entry_error("".into());
+                        if file.is_some() {
+                            self.leave_action_flow(app, tx);
+                        } else {
+                            self.find_created_playlist(name, app, tx);
+                        }
                     }
-                    self.fetch(app, tx, 0, false);
-                } else {
-                    self.fetch(app, tx, self.offset, false);
+                    Mutation::AddToPlaylist(_, _) => self.leave_action_flow(app, tx),
+                    Mutation::Clear => {
+                        while self.view() != View::Queue && !self.stack.is_empty() {
+                            self.stack.pop();
+                            self.history.pop();
+                        }
+                        self.fetch(app, tx, 0, false);
+                    }
+                    Mutation::RandomisePlay => self.push(View::NowPlaying, app, tx),
+                    _ if mutation.closes_action_menu(&self.view()) => self.back(app, tx),
+                    _ => self.fetch(app, tx, self.offset, false),
                 }
             }
             Err(err) => {
                 eprintln!("MPD queue action: {err}");
-                self.show(app, &format!("{err}\nMENU to go back"));
+                self.rows = std::mem::take(&mut self.mutation_rows);
+                if matches!(mutation, Mutation::CreatePlaylist(_, _)) {
+                    app.set_playlist_entry_error(err.into());
+                } else {
+                    app.invoke_show_status("Action failed".into());
+                }
+                self.show(app, "");
             }
+        }
+    }
+    fn leave_action_flow(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if matches!(self.view(), View::AddToPlaylist(_)) {
+            self.back(app, tx);
+        }
+        if matches!(self.view(), View::Actions(_, _) | View::QueueSong { .. }) {
+            self.back(app, tx);
         }
     }
     fn refresh_queue(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>) {
@@ -773,13 +888,15 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
             Entry::Info(format!("iPod Player {}", env!("CARGO_PKG_VERSION"))),
             Entry::Info("Rust + Slint / MPD".into()),
         ],
-        View::AddToPlaylist(file) => page(
-            mpd::list_playlists()?
-                .into_iter()
-                .map(|p| Entry::PlaylistTarget(p.name, file.clone()))
-                .collect(),
-            offset,
-        ),
+        View::AddToPlaylist(file) => {
+            let mut rows = vec![Entry::NewPlaylist];
+            rows.extend(
+                mpd::list_playlists()?
+                    .into_iter()
+                    .map(|p| Entry::PlaylistTarget(p.name, file.clone())),
+            );
+            page(rows, offset)
+        }
         View::Music => page(
             vec![
                 Entry::Navigate("Playlists", View::Playlists),
@@ -868,13 +985,15 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
                 .collect(),
             offset,
         ),
-        View::Playlists => page(
-            mpd::list_playlists()?
-                .into_iter()
-                .map(|p| Entry::Playlist(p.name))
-                .collect(),
-            offset,
-        ),
+        View::Playlists => {
+            let mut rows = vec![Entry::NewPlaylist];
+            rows.extend(
+                mpd::list_playlists()?
+                    .into_iter()
+                    .map(|p| Entry::Playlist(p.name)),
+            );
+            page(rows, offset)
+        }
         View::Songs => mpd::list_songs(offset, limit)?
             .into_iter()
             .map(Entry::Song)
@@ -952,6 +1071,26 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
                     let result = result.map(|(offset, rows)| {
                         request.offset = offset;
                         rows
+                    });
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(app) = weak.upgrade() {
+                            controller
+                                .lock()
+                                .unwrap()
+                                .complete(&app, &tx, request, result);
+                        }
+                    })
+                }
+                Job::FindPlaylist(mut request, name) => {
+                    let result = mpd::list_playlists().and_then(|playlists| {
+                        let index = playlists
+                            .iter()
+                            .position(|p| p.name == name)
+                            .ok_or("New playlist not found after creation")?
+                            + 1;
+                        request.offset = index / PAGE * PAGE;
+                        request.select_index = Some(index % PAGE);
+                        fetch(&request.view, request.offset)
                     });
                     slint::invoke_from_event_loop(move || {
                         if let Some(app) = weak.upgrade() {
@@ -1043,6 +1182,24 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
             controller.lock().unwrap().refresh_queue(&app, &requests);
         }
     });
+    let controller = browser.clone();
+    let weak = app.as_weak();
+    let requests = tx.clone();
+    app.on_playlist_name_submitted(move |name| {
+        if let Some(app) = weak.upgrade() {
+            controller
+                .lock()
+                .unwrap()
+                .submit_playlist_name(&name, &app, &requests);
+        }
+    });
+    let controller = browser.clone();
+    let weak = app.as_weak();
+    app.on_playlist_name_cancelled(move || {
+        if let Some(app) = weak.upgrade() {
+            controller.lock().unwrap().cancel_playlist_name(&app);
+        }
+    });
     let weak = app.as_weak();
     app.on_browse_step(move |delta| {
         if let Some(app) = weak.upgrade() {
@@ -1087,6 +1244,7 @@ mod tests {
                             let entries = rows(request.offset);
                             (request, entries)
                         }
+                        Job::FindPlaylist(_, _) => panic!("No saved playlists in this test"),
                         Job::JumpLast(mut request) => {
                             let (offset, entries) = last_page(|offset| Ok(rows(offset))).unwrap();
                             request.offset = offset;
@@ -1211,18 +1369,135 @@ mod tests {
                     file == "same.flac",
                 _ => false,
             });
-            if action == 4 {
-                browser.finish(&app, &tx, generation, mutation, Ok(()));
-                assert_eq!(browser.view(), View::Queue);
-                assert!(matches!(
-                    rx.try_recv().unwrap(),
-                    Job::Fetch(Request {
-                        view: View::Queue,
-                        ..
-                    })
-                ));
-            }
+            browser.finish(&app, &tx, generation, mutation, Ok(()));
+            assert_eq!(browser.view(), View::Queue);
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                Job::Fetch(Request {
+                    view: View::Queue,
+                    select_index: Some(1),
+                    ..
+                })
+            ));
         }
+
+        let (tx, rx) = mpsc::channel();
+        let action = Mutation::Source(
+            mpd::QueueSource::Song("song.flac".into()),
+            mpd::QueueAction::Append,
+        );
+        let make_browser = || Browser {
+            stack: vec![
+                View::Songs,
+                View::Actions(mpd::QueueSource::Song("song.flac".into()), "Song".into()),
+            ],
+            history: vec![
+                Page {
+                    rows: vec![],
+                    offset: 0,
+                    selected: 0,
+                    more: false,
+                },
+                Page {
+                    rows: vec![Entry::Info("one".into()), Entry::Info("two".into())],
+                    offset: 0,
+                    selected: 1,
+                    more: false,
+                },
+            ],
+            mutating: true,
+            generation: 7,
+            mutation_rows: vec![Entry::Action("Add to Queue", mpd::QueueAction::Append)],
+            ..Default::default()
+        };
+        let mut successful = make_browser();
+        successful.finish(&app, &tx, 7, action, Ok(()));
+        assert_eq!(successful.view(), View::Songs);
+        assert_eq!(successful.selected, 1);
+        assert!(rx.try_recv().is_err());
+        let mut failed = make_browser();
+        failed.finish(
+            &app,
+            &tx,
+            7,
+            Mutation::Source(
+                mpd::QueueSource::Song("song.flac".into()),
+                mpd::QueueAction::Append,
+            ),
+            Err("offline".into()),
+        );
+        assert!(matches!(failed.view(), View::Actions(_, _)));
+        assert_eq!(failed.rows.len(), 1);
+        assert!(rx.try_recv().is_err());
+
+        let mut naming = Browser {
+            stack: vec![View::Playlists],
+            rows: vec![Entry::NewPlaylist],
+            ..Default::default()
+        };
+        naming.open(0, &app, &tx);
+        assert!(app.get_playlist_entry_open());
+        naming.submit_playlist_name(" ", &app, &tx);
+        assert!(!app.get_playlist_entry_error().is_empty());
+        assert!(rx.try_recv().is_err());
+        naming.submit_playlist_name("Road", &app, &tx);
+        let Job::Mutate(mutation, generation) = rx.try_recv().unwrap() else {
+            panic!("expected creation");
+        };
+        assert!(matches!(mutation, Mutation::CreatePlaylist(_, None)));
+        naming.finish(&app, &tx, generation, mutation, Err("offline".into()));
+        assert!(app.get_playlist_entry_open());
+        assert_eq!(app.get_playlist_entry_error(), "offline");
+        naming.submit_playlist_name("Road", &app, &tx);
+        let Job::Mutate(mutation, generation) = rx.try_recv().unwrap() else {
+            panic!("expected retry");
+        };
+        naming.finish(&app, &tx, generation, mutation, Ok(()));
+        assert!(!app.get_playlist_entry_open());
+        assert!(matches!(rx.try_recv().unwrap(), Job::FindPlaylist(_, name) if name == "Road"));
+
+        let mut add = Browser {
+            stack: vec![
+                View::Songs,
+                View::Actions(mpd::QueueSource::Song("song.flac".into()), "Song".into()),
+                View::AddToPlaylist("song.flac".into()),
+            ],
+            history: vec![
+                Page {
+                    rows: vec![],
+                    offset: 0,
+                    selected: 0,
+                    more: false,
+                },
+                Page {
+                    rows: vec![Entry::Info("first".into()), Entry::Info("selected".into())],
+                    offset: 0,
+                    selected: 1,
+                    more: false,
+                },
+                Page {
+                    rows: vec![Entry::Navigate(
+                        "Add to Playlist",
+                        View::AddToPlaylist("song.flac".into()),
+                    )],
+                    offset: 0,
+                    selected: 0,
+                    more: false,
+                },
+            ],
+            rows: vec![Entry::NewPlaylist],
+            ..Default::default()
+        };
+        add.open(0, &app, &tx);
+        add.submit_playlist_name("Together", &app, &tx);
+        let Job::Mutate(mutation, generation) = rx.try_recv().unwrap() else {
+            panic!("expected add");
+        };
+        assert!(matches!(mutation, Mutation::CreatePlaylist(_, Some(_))));
+        add.finish(&app, &tx, generation, mutation, Ok(()));
+        assert_eq!(add.view(), View::Songs);
+        assert_eq!(add.selected, 1);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
