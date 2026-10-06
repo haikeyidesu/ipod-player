@@ -140,16 +140,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(app.get_carousel_mode());
     key(&app, "j");
     assert_eq!(app.get_carousel_page(), 1);
+    key(&app, "f");
+    key(&app, "b");
+    assert_eq!(
+        &seeks.borrow()[2..],
+        &[("42".into(), 88.0), ("42".into(), 83.0)]
+    );
     key(&app, "n");
     key(&app, "p");
+    key(&app, "<");
+    key(&app, ">");
     key(&app, " ");
-    assert_eq!(*transports.borrow(), ["next", "previous"]);
-    assert_eq!(seeks.borrow().len(), 2);
+    assert_eq!(
+        *transports.borrow(),
+        ["next", "play-pause", "previous", "next"]
+    );
+    assert_eq!(seeks.borrow().len(), 4);
     key(&app, "h");
     assert_eq!(app.get_carousel_page(), 0);
     key(&app, "h");
     assert!(!app.get_carousel_mode());
     settle();
+
+    // Transport seeking works from a browser too, without activating a row.
+    app.set_page_title("Songs".into());
+    app.set_browse_active(true);
+    let before = seeks.borrow().len();
+    let before_activations = activations.borrow().len();
+    key(&app, "f");
+    key(&app, "b");
+    assert_eq!(seeks.borrow().len(), before + 2);
+    assert_eq!(activations.borrow().len(), before_activations);
+    app.set_page_title("Now Playing".into());
+    app.set_browse_active(false);
 
     // Continuous bar control remains a single ID-bound seek on release.
     let p = point(50.0 + 19.0 + 2.0 + 278.0 * 0.25, 32.0 + 61.0 + 166.0);
@@ -160,15 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .dispatch_event(Event::PointerMoved { position: end });
     up(&app, end);
     assert!(!app.get_scrubbing());
-    assert_eq!(seeks.borrow().len(), 3);
-    assert!((seeks.borrow()[2].1 - 94.5).abs() < 0.1);
+    assert_eq!(seeks.borrow().len(), 7);
+    assert!((seeks.borrow()[6].1 - 94.5).abs() < 0.1);
     down(&app, p);
     assert!(app.get_scrubbing());
     app.set_player_song_id("43".into());
     slint::platform::update_timers_and_animations();
     up(&app, p);
     assert!(!app.get_scrubbing());
-    assert_eq!(seeks.borrow().len(), 3);
+    assert_eq!(seeks.borrow().len(), 7);
 
     // Mouse activation of the playback view, then wheel scrolling to lyrics.
     let artwork = point(110.0, 130.0);
@@ -691,6 +714,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(Duration::from_millis(1000));
     slint::platform::update_timers_and_animations();
     assert!(!app.get_status_showing());
+    // Render an unfocused marked song beside a focused unmarked song.
+    app.set_page_title("Select Music".into());
+    app.set_browse_active(true);
+    app.set_picker_active(true);
+    app.set_browser_items(ModelRc::from(Rc::new(VecModel::from(vec![
+        SharedString::from("Add Selected (1)"),
+        SharedString::from("Marked track"),
+        SharedString::from("Focused track"),
+    ]))));
+    app.set_browser_leaves(ModelRc::from(Rc::new(VecModel::from(vec![true; 3]))));
+    app.set_browser_songs(ModelRc::from(Rc::new(VecModel::from(vec![
+        false, true, true,
+    ]))));
+    app.set_browser_marks(ModelRc::from(Rc::new(VecModel::from(vec![
+        false, true, false,
+    ]))));
+    app.set_browser_queue_positions(ModelRc::from(Rc::new(VecModel::from(vec![-1; 3]))));
+    app.set_selected_index(2);
+    app.window().request_redraw();
+    let mut picker_pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(420, 640);
+    assert!(window.draw_if_needed(|renderer| {
+        renderer.render(picker_pixels.make_mut_slice(), 420);
+    }));
+    image::save_buffer(
+        "target/now-playing-preview/picker-marks.png",
+        picker_pixels.as_bytes(),
+        420,
+        640,
+        image::ColorType::Rgb8,
+    )?;
+
     let picker_events = Rc::new(RefCell::new(Vec::new()));
     let received = picker_events.clone();
     app.on_browse_pick_space(move || received.borrow_mut().push("space".to_string()));

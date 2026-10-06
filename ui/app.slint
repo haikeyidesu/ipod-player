@@ -46,6 +46,8 @@ component DisplayPanel inherits Rectangle {
     in property <string> player-elapsed-label;
     in property <string> player-remaining-label;
     in property <[bool]> browser-songs;
+    in property <[bool]> browser-marks;
+    in property <bool> picker-active;
     in-out property <int> selected-index: 0;
     in property <int> battery-level: -1;
     in property <bool> battery-charging: false;
@@ -175,6 +177,7 @@ component DisplayPanel inherits Rectangle {
                 height: 34px * root.ui-scale;
                 background: root.selected-index == index
                     ? @linear-gradient(180deg, #358dd7 0%, #217bc6 53%, #145da5 100%)
+                    : root.picker-active && root.browser-marks[index] ? #e1f3e9
                     : Math.mod(index, 2) == 0 ? #f0f5f8 : #edf3f6;
 
                 // One continuous Aqua fill: no white top-edge overlay/seam.
@@ -185,8 +188,31 @@ component DisplayPanel inherits Rectangle {
                     background: root.selected-index == index ? #0e498b75 : #849baa25;
                 }
 
+                // A checkmark denotes a marked song independently of row focus.
+                if root.picker-active && root.browser-songs[index]: Rectangle {
+                    x: 8px * root.ui-scale;
+                    y: 8px * root.ui-scale;
+                    width: 18px * root.ui-scale;
+                    height: 18px * root.ui-scale;
+                    border-radius: 3px * root.ui-scale;
+                    border-width: 2px * root.ui-scale;
+                    border-color: root.browser-marks[index] ? #195b32 : (root.selected-index == index ? white : #8195a0);
+                    background: root.browser-marks[index] ? #28753a : #ffffff55;
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.browser-marks[index] ? "✓" : "";
+                        font-size: 16px * root.ui-scale;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        color: white;
+                    }
+                }
+
                 MarqueeLabel {
-                    x: (root.browse-active && root.browser-queue-positions[index] >= 0 ? 28px : 12px) * root.ui-scale;
+                    x: (root.picker-active && root.browser-songs[index] ? 35px
+                        : root.browse-active && root.browser-queue-positions[index] >= 0 ? 28px : 12px) * root.ui-scale;
                     width: parent.width - self.x - 38px * root.ui-scale;
                     height: parent.height;
                     text: label;
@@ -462,6 +488,8 @@ component DeviceShell inherits Rectangle {
     in property <string> player-elapsed-label;
     in property <string> player-remaining-label;
     in property <[bool]> browser-songs;
+    in property <[bool]> browser-marks;
+    in property <bool> picker-active;
     in-out property <int> selected-index: 0;
     in property <[string]> menu-items;
     in property <[string]> browser-items;
@@ -546,6 +574,8 @@ component DeviceShell inherits Rectangle {
         player-elapsed-label: root.player-elapsed-label;
         player-remaining-label: root.player-remaining-label;
         browser-songs: root.browser-songs;
+        browser-marks: root.browser-marks;
+        picker-active: root.picker-active;
         x: 50px * root.ui-scale;
         y: 32px * root.ui-scale;
         width: 320px * root.ui-scale;
@@ -779,7 +809,13 @@ export component AppWindow inherits Window {
         }
     }
     function seek-step(delta: int) {
-        if root.can-seek && !root.scrubbing {
+        if root.can-seek { root.seek-key(delta); }
+    }
+    // Keyboard seeking also works while browsing; the progress drag remains
+    // restricted to Now Playing through can-seek.
+    function seek-key(delta: int) {
+        if root.player-duration > 0 && root.player-song-id != ""
+            && (root.player-playing || root.player-paused) && !root.scrubbing {
             root.player-elapsed = max(0, min(root.player-duration, root.player-elapsed + delta * root.seek-interval-seconds));
             root.seek-requested(root.player-song-id, root.player-elapsed);
             root.refresh-lyrics();
@@ -828,6 +864,7 @@ export component AppWindow inherits Window {
     in-out property <[bool]> browser-leaves: [];
     in-out property <[bool]> browser-shuffles: [];
     in-out property <[bool]> browser-songs: [];
+    in-out property <[bool]> browser-marks: [];
     in-out property <[int]> browser-queue-positions: [];
     forward-focus: navigation;
     init => { navigation.focus(); }
@@ -942,34 +979,42 @@ export component AppWindow inherits Window {
             } else if event.text == "h" || event.text == Key.LeftArrow || event.text == Key.Escape {
                 if !root.menu-pressed { root.back(); }
                 root.menu-pressed = true;
+            } else if event.text == "f" {
+                root.seek-key(1);
+            } else if event.text == "b" {
+                root.seek-key(-1);
+            } else if event.text == "p" {
+                if !root.play-pressed { root.dispatch-transport("play-pause"); }
+                root.play-pressed = true;
+            } else if event.text == "<" || (event.modifiers.shift && event.text == ",")
+                || event.text == "[" {
+                if !root.prev-pressed { root.dispatch-transport("previous"); }
+                root.prev-pressed = true;
+            } else if event.text == ">" || (event.modifiers.shift && event.text == ".")
+                || event.text == "]" || event.text == "n" {
+                if !root.next-pressed { root.dispatch-transport("next"); }
+                root.next-pressed = true;
             } else if event.text == "," {
                 root.change-volume(-1);
             } else if event.text == "." {
                 root.change-volume(1);
-            } else if event.text == "[" {
-                if !root.prev-pressed { root.dispatch-transport("previous"); }
-                root.prev-pressed = true;
-            } else if event.text == "]" {
-                if !root.next-pressed { root.dispatch-transport("next"); }
-                root.next-pressed = true;
-            } else if event.text == "n" {
-                // 'n' for next track
-                if !root.next-pressed { root.dispatch-transport("next"); }
-                root.next-pressed = true;
-            } else if event.text == "p" {
-                // 'p' for previous track
-                if !root.prev-pressed { root.dispatch-transport("previous"); }
-                root.prev-pressed = true;
             } else {
                 return reject;
             }
             return accept;
         }
         key-released(event) => {
-            if event.text == "n" { root.next-pressed = false; return accept; }
-            if event.text == "p" { root.prev-pressed = false; return accept; }
-            if event.text == "[" { root.prev-pressed = false; return accept; }
-            if event.text == "]" { root.next-pressed = false; return accept; }
+            if event.text == "n" || event.text == ">" || event.text == "]"
+                || (event.modifiers.shift && event.text == ".") {
+                root.next-pressed = false;
+                return accept;
+            }
+            if event.text == "<" || event.text == "["
+                || (event.modifiers.shift && event.text == ",") {
+                root.prev-pressed = false;
+                return accept;
+            }
+            if event.text == "p" { root.play-pressed = false; return accept; }
             if event.text == "l" || event.text == Key.RightArrow || event.text == Key.Return {
                 root.next-pressed = false;
                 root.center-pressed = false;
@@ -1026,6 +1071,8 @@ export component AppWindow inherits Window {
             player-elapsed-label: root.scrubbing ? root.time-text(root.scrub-position) : root.player-elapsed-label;
             player-remaining-label: root.scrubbing ? "-" + root.time-text(root.player-duration - root.scrub-position) : root.player-remaining-label;
             browser-songs: root.browser-songs;
+            browser-marks: root.browser-marks;
+            picker-active: root.picker-active;
             width: 420px * root.ui-scale;
             height: 640px * root.ui-scale;
             x: (parent.width - self.width) / 2;

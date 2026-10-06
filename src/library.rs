@@ -374,17 +374,7 @@ impl Browser {
         app.set_browser_items(ModelRc::from(std::rc::Rc::new(VecModel::from(
             self.rows
                 .iter()
-                .enumerate()
-                .map(|(i, r)| match r {
-                    Entry::PickerSong(song) => SharedString::from(format!(
-                        "{}{}",
-                        if self.picker_files.get(&(self.offset + i - 1)) == Some(&song.file) {
-                            "✓ "
-                        } else {
-                            "○ "
-                        },
-                        song.title
-                    )),
+                .map(|r| match r {
                     Entry::CommitSelected => {
                         SharedString::from(format!("Add Selected ({})", self.picker_files.len()))
                     }
@@ -400,6 +390,18 @@ impl Browser {
         ))));
         app.set_browser_songs(ModelRc::from(std::rc::Rc::new(VecModel::from(
             self.rows.iter().map(Entry::is_song).collect::<Vec<_>>(),
+        ))));
+        app.set_browser_marks(ModelRc::from(std::rc::Rc::new(VecModel::from(
+            self.rows
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| match entry {
+                    Entry::PickerSong(song) => {
+                        self.picker_files.get(&(self.offset + i - 1)) == Some(&song.file)
+                    }
+                    _ => false,
+                })
+                .collect::<Vec<_>>(),
         ))));
         app.set_browser_queue_positions(ModelRc::from(std::rc::Rc::new(VecModel::from(
             self.rows
@@ -1540,6 +1542,7 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
 
     #[test]
     fn bounded_navigation_preserves_pagination_and_never_activates() {
@@ -1870,7 +1873,10 @@ mod tests {
             ..Default::default()
         };
         picker.show(&app, "");
+        assert_eq!(app.get_browser_marks().row_data(0), Some(false));
+        assert_eq!(app.get_browser_marks().row_data(1), Some(false));
         picker.picker_space(&app, &tx);
+        assert_eq!(app.get_browser_marks().row_data(1), Some(true));
         assert_eq!(picker.selected, 2);
         assert_eq!(picker.picker_files.keys().copied().collect::<Vec<_>>(), [0]);
         picker.shift_picker(1, &app, &tx);
@@ -1904,6 +1910,8 @@ mod tests {
         };
         assert_eq!(request.offset, 6);
         picker.complete(&app, &tx, request, Ok((5..11).map(picker_song).collect()));
+        assert_eq!(app.get_browser_marks().row_data(0), Some(true));
+        assert_eq!(app.get_browser_marks().row_data(1), Some(false));
         assert_eq!(
             picker.picker_files.keys().copied().collect::<Vec<_>>(),
             [4, 5]

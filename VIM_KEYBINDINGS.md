@@ -27,7 +27,7 @@ entire paginated library. This picker does not affect the active queue.
 
 The **Add Selected** row shows the marked-song count. A batch error keeps songs
 that were not added selected, so retrying does not duplicate successful additions.
-Outside this picker, Space is unbound; use the click-wheel play button or a media key for playback.
+Outside this picker, Space is unbound; use `p`, the click-wheel play button or a media key for playback.
 
 ## MPD mixer volume
 
@@ -43,10 +43,11 @@ Outside this picker, Space is unbound; use the click-wheel play button or a medi
 
 | Key | Action | Description |
 |-----|--------|-------------|
-| `[` | Previous | Restart after 3 seconds elapsed; otherwise previous track |
-| `]` | Next | Next track |
-| `n` | Next | Alias for next track |
-| `p` | Previous | Alias for previous track |
+| `f` / `b` | Seek forward / backward | 5 seconds, while playing or paused; also works when browsing |
+| `p` | Play/Pause | Toggle playback |
+| `<` / `>` | Previous / next | Previous restarts after 3 seconds elapsed; otherwise changes track |
+| `[` / `]` | Previous / next | Existing aliases |
+| `n` | Next | Existing alias |
 
 ## Click Wheel Navigation
 
@@ -81,9 +82,10 @@ The click wheel has four sections and a center button:
 | `j` | Seek backward 5 seconds | Next panel; scroll down in plain lyrics |
 | `k` | Seek forward 5 seconds | Previous panel; scroll up in plain lyrics |
 | `↓` / `↑` | Seek forward / backward 5 seconds | Next / previous panel; scroll plain lyrics |
-| `n` / `]` | Next song | Next song |
-| `p` / `[` | Restart after 3 seconds, otherwise previous | Same |
-| Play button | Play/pause | Play/pause |
+| `f` / `b` | Seek forward / backward 5 seconds | Same |
+| `n` / `>` / `]` | Next song | Next song |
+| `<` / `[` | Restart after 3 seconds, otherwise previous | Same |
+| `p` / Play button | Play/pause | Play/pause |
 
 - Double-click the artwork/metadata area to activate the carousel with a mouse.
   Mouse-wheel or rotational-wheel scrolling then navigates the panels. Outside
