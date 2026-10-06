@@ -600,6 +600,63 @@ pub fn add_to_playlist(name: &str, file: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn playlist_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Enter a playlist name".into());
+    }
+    // MPD interprets '/' as a directory in its playlist store.
+    if name.contains(['/', '\\'])
+        || name.chars().any(char::is_control)
+        || name == "."
+        || name == ".."
+    {
+        return Err("Playlist name contains unsupported characters".into());
+    }
+    Ok(name)
+}
+
+/// MPD has no empty-playlist command. For an empty playlist, add a known library
+/// song to the NEW saved playlist, then delete that position. Never touch queue.
+/// A failed delete leaves the new playlist with that song and reports the error.
+pub fn create_playlist(name: &str, file: Option<&str>) -> Result<(), String> {
+    create_playlist_using(
+        name,
+        file,
+        list_playlists,
+        || Ok(list_songs(0, 1)?.into_iter().next().map(|song| song.file)),
+        |command| query(command).map(|_| ()),
+    )
+}
+
+fn create_playlist_using(
+    name: &str,
+    file: Option<&str>,
+    mut list: impl FnMut() -> Result<Vec<Playlist>, String>,
+    mut first_song: impl FnMut() -> Result<Option<String>, String>,
+    mut command: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let name = playlist_name(name)?;
+    let quoted = quote(name)?;
+    if list()?.iter().any(|p| p.name == name) {
+        return Err("Playlist already exists".into());
+    }
+    let empty = file.is_none();
+    let placeholder = if empty {
+        Some(first_song()?.ok_or("Library needs a song to create an empty playlist")?)
+    } else {
+        None
+    };
+    let file = file.or(placeholder.as_deref()).unwrap();
+    command(&playlist_add_command(name, file)?)?;
+    if empty {
+        command(&format!("playlistdelete {quoted} 0")).map_err(|err| {
+            format!("Playlist created with a temporary song; could not remove it: {err}")
+        })?;
+    }
+    Ok(())
+}
+
 /// Seek only the item for which the UI started its preview. Do not send play or
 /// pause: MPD preserves the current playing/paused state when seeking this ID.
 pub fn seek(id: u64, seconds: f64) -> Result<(), String> {
@@ -1518,6 +1575,69 @@ mod tests {
         let command = playlist_add_command("saved", "a.flac").unwrap();
         assert_eq!(command.lines().count(), 1);
         assert!(!command.starts_with("addid") && !command.starts_with("clear"));
+    }
+
+    #[test]
+    fn playlist_creation_validates_names_duplicates_and_partial_failures() {
+        for invalid in ["", "  ", "folder/name", "x\\y", "x\nclear", "x\tbad", "."] {
+            assert!(playlist_name(invalid).is_err());
+        }
+        assert_eq!(playlist_name("  Road Mix  ").unwrap(), "Road Mix");
+        let commands = std::cell::RefCell::new(Vec::new());
+        let create = |name: &str, file: Option<&str>| {
+            create_playlist_using(
+                name,
+                file,
+                || Ok(Vec::new()),
+                || Ok(Some("library/song.flac".into())),
+                |cmd| {
+                    commands.borrow_mut().push(cmd.to_string());
+                    Ok(())
+                },
+            )
+        };
+        create(" Road Mix ", Some("chosen.flac")).unwrap();
+        assert_eq!(
+            &*commands.borrow(),
+            &["playlistadd \"Road Mix\" \"chosen.flac\""]
+        );
+        commands.borrow_mut().clear();
+        create("Empty", None).unwrap();
+        assert_eq!(
+            &*commands.borrow(),
+            &[
+                "playlistadd \"Empty\" \"library/song.flac\"",
+                "playlistdelete \"Empty\" 0"
+            ]
+        );
+        assert!(
+            create_playlist_using(
+                "Existing",
+                None,
+                || Ok(vec![Playlist {
+                    name: "Existing".into()
+                }]),
+                || panic!("no placeholder for duplicates"),
+                |_| panic!("no mutation for duplicates")
+            )
+            .unwrap_err()
+            .contains("already exists")
+        );
+        let error = create_playlist_using(
+            "Partial",
+            None,
+            || Ok(Vec::new()),
+            || Ok(Some("library/song.flac".into())),
+            |cmd| {
+                if cmd.starts_with("playlistdelete") {
+                    Err("MPD failed".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("temporary song"));
     }
 
     #[test]
