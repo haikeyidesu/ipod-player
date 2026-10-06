@@ -30,6 +30,7 @@ enum View {
     Songs,
     Playlists,
     PlaylistSongs(String),
+    SelectMusic(String),
     Directory(String),
     Actions(mpd::QueueSource, String),
     AddToPlaylist(String),
@@ -48,6 +49,7 @@ impl View {
         match self {
             Self::Home => "",
             Self::AddToPlaylist(_) => "Add to Playlist",
+            Self::SelectMusic(_) => "Select Music",
             Self::Settings => "Settings",
             Self::Window => "Window",
             Self::Playback => "Playback",
@@ -106,6 +108,8 @@ enum Entry {
     Cancel,
     PlaylistTarget(String, String),
     NewPlaylist,
+    PickerSong(mpd::Song),
+    CommitSelected,
     Setting(String, mpd::PlaybackSetting),
     Info(String),
     PinWindow,
@@ -137,9 +141,10 @@ impl Entry {
             Self::Remove(_) => "Remove from Queue",
             Self::Artist(n) | Self::Album(n) | Self::Playlist(n) => n,
             Self::Folder(path) => friendly(path),
-            Self::Song(s) => &s.title,
+            Self::Song(s) | Self::PickerSong(s) => &s.title,
             Self::PlaylistTarget(name, _) | Self::Setting(name, _) | Self::Info(name) => name,
             Self::NewPlaylist => "New Playlist…",
+            Self::CommitSelected => "Add Selected",
         }
     }
     fn display_label(&self, app: &AppWindow) -> String {
@@ -200,6 +205,8 @@ impl Entry {
                 | Self::Cancel
                 | Self::PlaylistTarget(_, _)
                 | Self::NewPlaylist
+                | Self::PickerSong(_)
+                | Self::CommitSelected
                 | Self::Setting(_, _)
                 | Self::Info(_)
                 | Self::PinWindow
@@ -213,7 +220,7 @@ impl Entry {
         )
     }
     fn is_song(&self) -> bool {
-        matches!(self, Self::Song(_) | Self::Queue(_))
+        matches!(self, Self::Song(_) | Self::PickerSong(_) | Self::Queue(_))
     }
     fn queue_position(&self) -> i32 {
         match self {
@@ -233,6 +240,11 @@ struct Request {
 enum Mutation {
     AddToPlaylist(String, String),
     CreatePlaylist(String, Option<String>),
+    AddSelectedMusic {
+        playlist: String,
+        files: Vec<String>,
+        added: usize,
+    },
     Setting(mpd::PlaybackSetting),
     Source(mpd::QueueSource, mpd::QueueAction),
     PlayQueue(u64),
@@ -243,7 +255,7 @@ enum Mutation {
     RandomisePlay,
 }
 impl Mutation {
-    fn run(&self) -> Result<(), String> {
+    fn run(&mut self) -> Result<(), String> {
         match self {
             Self::Source(source, action) => mpd::queue_source(source, *action),
             Self::PlayQueue(id) => mpd::play_queue_id(*id),
@@ -252,6 +264,14 @@ impl Mutation {
             Self::Clear => mpd::clear_queue(),
             Self::AddToPlaylist(name, file) => mpd::add_to_playlist(name, file),
             Self::CreatePlaylist(name, file) => mpd::create_playlist(name, file.as_deref()),
+            Self::AddSelectedMusic {
+                playlist,
+                files,
+                added,
+            } => mpd::add_songs_to_playlist(playlist, files).map_err(|(count, err)| {
+                *added = count;
+                err
+            }),
             Self::Setting(setting) => mpd::set_playback(*setting),
             Self::ShuffleQueue => mpd::shuffle_queue(),
             Self::RandomisePlay => mpd::shuffle_all_songs(),
@@ -266,6 +286,7 @@ impl Mutation {
         match self {
             Self::AddToPlaylist(_, _) => Some("Added to playlist"),
             Self::CreatePlaylist(_, _) => Some("Playlist created"),
+            Self::AddSelectedMusic { .. } => Some("Songs added to playlist"),
             Self::Source(_, A::Append) => Some("Added to queue"),
             Self::Source(_, A::PlayNext) => Some("Playing next"),
             Self::Source(QueueSource::Song(_), A::PlayNow) => Some("Added to queue"),
@@ -307,6 +328,8 @@ impl Mutation {
 enum Job {
     JumpLast(Request),
     FindPlaylist(Request, String),
+    BulkSelect(u64, bool),
+    PickerRange(u64, usize, usize, usize),
     Fetch(Request),
     Mutate(Mutation, u64),
 }
@@ -331,6 +354,11 @@ struct Browser {
     mutation_rows: Vec<Entry>,
     // None = not naming; Some(None) = empty playlist; Some(Some(file)) = create-and-add.
     playlist_entry_file: Option<Option<String>>,
+    picker_files: std::collections::BTreeMap<usize, String>,
+    picker_cache: std::collections::BTreeMap<usize, String>,
+    picker_anchor: Option<usize>,
+    picker_range_base: Option<std::collections::BTreeMap<usize, String>>,
+    picker_pending_shift: Option<usize>,
 }
 impl Browser {
     fn view(&self) -> View {
@@ -339,13 +367,29 @@ impl Browser {
     fn show(&self, app: &AppWindow, message: &str) {
         let title = self.view().title().to_string();
         app.set_volume_page(self.view() == View::Volume);
+        app.set_picker_active(matches!(self.view(), View::SelectMusic(_)));
         app.set_page_title(title.into());
         app.set_browse_active(self.view() != View::NowPlaying);
         app.set_browse_message(message.into());
         app.set_browser_items(ModelRc::from(std::rc::Rc::new(VecModel::from(
             self.rows
                 .iter()
-                .map(|r| SharedString::from(r.display_label(app)))
+                .enumerate()
+                .map(|(i, r)| match r {
+                    Entry::PickerSong(song) => SharedString::from(format!(
+                        "{}{}",
+                        if self.picker_files.get(&(self.offset + i - 1)) == Some(&song.file) {
+                            "✓ "
+                        } else {
+                            "○ "
+                        },
+                        song.title
+                    )),
+                    Entry::CommitSelected => {
+                        SharedString::from(format!("Add Selected ({})", self.picker_files.len()))
+                    }
+                    _ => SharedString::from(r.display_label(app)),
+                })
                 .collect::<Vec<_>>(),
         ))));
         app.set_browser_leaves(ModelRc::from(std::rc::Rc::new(VecModel::from(
@@ -413,6 +457,13 @@ impl Browser {
         }
     }
     fn push(&mut self, view: View, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if matches!(view, View::SelectMusic(_)) {
+            self.picker_files.clear();
+            self.picker_cache.clear();
+            self.picker_anchor = None;
+            self.picker_range_base = None;
+            self.picker_pending_shift = None;
+        }
         self.history.push(Page {
             rows: self.rows.clone(),
             offset: self.offset,
@@ -435,6 +486,160 @@ impl Browser {
             self.show(app, "");
         } else {
             self.fetch(app, tx, 0, false);
+        }
+    }
+    fn toggle_picker(&mut self, row: usize, file: String, app: &AppWindow) {
+        let index = self.offset + row - 1;
+        if self.picker_files.remove(&index).is_none() {
+            self.picker_files.insert(index, file);
+        }
+        self.picker_anchor = Some(index);
+        self.picker_range_base = None;
+        self.show(app, "");
+    }
+    fn picker_space(&mut self, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if self.loading || self.mutating {
+            return;
+        }
+        let row = app.get_selected_index().max(0) as usize;
+        if let Some(Entry::PickerSong(song)) = self.rows.get(row) {
+            self.selected = row;
+            self.toggle_picker(row, song.file.clone(), app);
+            self.step(1, app, tx);
+        }
+    }
+    fn picker_bulk(&mut self, invert: bool, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if !matches!(self.view(), View::SelectMusic(_)) || self.loading || self.mutating {
+            return;
+        }
+        self.loading = true;
+        self.generation += 1;
+        app.invoke_show_status("Scanning library…".into());
+        if tx.send(Job::BulkSelect(self.generation, invert)).is_err() {
+            self.loading = false;
+            app.invoke_show_status("Browser worker stopped".into());
+        }
+    }
+    fn complete_bulk(
+        &mut self,
+        app: &AppWindow,
+        generation: u64,
+        invert: bool,
+        result: Result<Vec<String>, String>,
+    ) {
+        if generation != self.generation || !matches!(self.view(), View::SelectMusic(_)) {
+            return;
+        }
+        self.loading = false;
+        match result {
+            Ok(files) => {
+                if !invert {
+                    self.picker_files.clear();
+                } else {
+                    self.picker_files.retain(|index, _| *index < files.len());
+                }
+                for (index, file) in files.into_iter().enumerate() {
+                    if invert && self.picker_files.remove(&index).is_some() {
+                        continue;
+                    }
+                    self.picker_files.insert(index, file);
+                }
+                self.picker_range_base = None;
+                self.picker_anchor = None;
+                app.invoke_show_status(
+                    format!("{} songs selected", self.picker_files.len()).into(),
+                );
+                self.show(app, "");
+            }
+            Err(err) => {
+                eprintln!("MPD song selection: {err}");
+                app.invoke_show_status("Could not scan library".into());
+            }
+        }
+    }
+    fn apply_picker_range(&mut self, end: usize, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        let anchor = self.picker_anchor.unwrap_or(end);
+        let start = anchor.min(end);
+        let stop = anchor.max(end);
+        if (start..=stop).any(|index| !self.picker_cache.contains_key(&index)) {
+            self.loading = true;
+            self.generation += 1;
+            if tx
+                .send(Job::PickerRange(self.generation, start, stop, end))
+                .is_err()
+            {
+                self.loading = false;
+                app.invoke_show_status("Browser worker stopped".into());
+            }
+            return;
+        }
+        let base = self
+            .picker_range_base
+            .get_or_insert_with(|| self.picker_files.clone())
+            .clone();
+        self.picker_files = base;
+        for index in start..=stop {
+            self.picker_files
+                .insert(index, self.picker_cache[&index].clone());
+        }
+        self.show(app, "");
+    }
+    fn complete_picker_range(
+        &mut self,
+        app: &AppWindow,
+        tx: &mpsc::Sender<Job>,
+        generation: u64,
+        end: usize,
+        result: Result<Vec<(usize, String)>, String>,
+    ) {
+        if generation != self.generation || !matches!(self.view(), View::SelectMusic(_)) {
+            return;
+        }
+        self.loading = false;
+        match result {
+            Ok(files) => {
+                self.picker_cache.extend(files);
+                self.apply_picker_range(end, app, tx);
+            }
+            Err(err) => {
+                eprintln!("MPD song range: {err}");
+                self.picker_range_base = None;
+                app.invoke_show_status("Could not select range".into());
+            }
+        }
+    }
+    fn shift_picker(&mut self, delta: i32, app: &AppWindow, tx: &mpsc::Sender<Job>) {
+        if !matches!(self.view(), View::SelectMusic(_))
+            || self.loading
+            || self.mutating
+            || delta == 0
+        {
+            return;
+        }
+        self.selected =
+            (app.get_selected_index().max(0) as usize).min(self.rows.len().saturating_sub(1));
+        let Some(Entry::PickerSong(_)) = self.rows.get(self.selected) else {
+            return;
+        };
+        let current = self.offset + self.selected - 1;
+        let Some(end) = current.checked_add_signed(delta.signum() as isize) else {
+            return;
+        };
+        if self.picker_anchor.is_none() {
+            self.picker_anchor = Some(current);
+        }
+        if end >= self.offset.saturating_sub(1) && end < self.offset + self.rows.len() - 1 {
+            let row = end + 1 - self.offset;
+            if matches!(self.rows.get(row), Some(Entry::PickerSong(_))) {
+                self.selected = row;
+                self.apply_picker_range(end, app, tx);
+            }
+        } else if end < current && self.offset >= PAGE {
+            self.picker_pending_shift = Some(end);
+            self.fetch_with_selection(app, tx, self.offset - PAGE, false, Some(PAGE - 1));
+        } else if end > current && self.more {
+            self.picker_pending_shift = Some(end);
+            self.fetch_with_selection(app, tx, self.offset + PAGE, false, Some(0));
         }
     }
     fn mutate(&mut self, mutation: Mutation, app: &AppWindow, tx: &mpsc::Sender<Job>) {
@@ -504,6 +709,25 @@ impl Browser {
             Entry::Cancel => self.back(app, tx),
             Entry::PlaylistTarget(name, file) => {
                 self.mutate(Mutation::AddToPlaylist(name, file), app, tx)
+            }
+            Entry::PickerSong(song) => self.toggle_picker(index as usize, song.file, app),
+            Entry::CommitSelected => {
+                if let View::SelectMusic(playlist) = self.view() {
+                    if self.picker_files.is_empty() {
+                        app.invoke_show_status("Select songs first".into());
+                    } else {
+                        let files = self.picker_files.values().cloned().collect();
+                        self.mutate(
+                            Mutation::AddSelectedMusic {
+                                playlist,
+                                files,
+                                added: 0,
+                            },
+                            app,
+                            tx,
+                        );
+                    }
+                }
             }
             Entry::NewPlaylist => {
                 let file = match self.view() {
@@ -578,6 +802,13 @@ impl Browser {
         if self.mutating {
             return;
         }
+        if matches!(self.view(), View::SelectMusic(_)) {
+            self.picker_files.clear();
+            self.picker_cache.clear();
+            self.picker_anchor = None;
+            self.picker_range_base = None;
+            self.picker_pending_shift = None;
+        }
         if self.stack.pop().is_none() {
             if self.rows.is_empty() {
                 self.fetch(app, tx, 0, false);
@@ -632,6 +863,10 @@ impl Browser {
             return;
         }
         // Mouse selection and wheel selection must share the same index.
+        if matches!(self.view(), View::SelectMusic(_)) && self.picker_range_base.is_some() {
+            self.picker_range_base = None;
+            self.picker_anchor = None;
+        }
         self.selected = (app.get_selected_index().max(0) as usize).min(self.rows.len() - 1);
         if delta > 0 {
             if self.selected + 1 < self.rows.len() {
@@ -672,6 +907,14 @@ impl Browser {
                 self.more = rows.len() > PAGE;
                 rows.truncate(PAGE);
                 self.rows = rows;
+                if matches!(request.view, View::SelectMusic(_)) {
+                    for (i, entry) in self.rows.iter().enumerate() {
+                        if let Entry::PickerSong(song) = entry {
+                            self.picker_cache
+                                .insert(request.offset + i - 1, song.file.clone());
+                        }
+                    }
+                }
                 self.selected = if request.select_last {
                     self.rows.len().saturating_sub(1)
                 } else {
@@ -680,6 +923,9 @@ impl Browser {
                         .unwrap_or(0)
                         .min(self.rows.len().saturating_sub(1))
                 };
+                if let Some(end) = self.picker_pending_shift.take() {
+                    self.apply_picker_range(end, app, tx);
+                }
                 self.show(
                     app,
                     if self.rows.is_empty() {
@@ -691,6 +937,7 @@ impl Browser {
             }
             Err(err) => {
                 eprintln!("MPD library: {err}");
+                self.picker_pending_shift = None;
                 self.show(app, "Could not load — MENU to go back");
             }
         }
@@ -715,6 +962,10 @@ impl Browser {
             Ok(()) => {
                 self.rows = std::mem::take(&mut self.mutation_rows);
                 match mutation {
+                    Mutation::AddSelectedMusic { playlist, .. } => {
+                        self.back(app, tx);
+                        self.push(View::PlaylistSongs(playlist), app, tx);
+                    }
                     Mutation::CreatePlaylist(name, file) => {
                         self.playlist_entry_file = None;
                         app.set_playlist_entry_open(false);
@@ -741,6 +992,19 @@ impl Browser {
             Err(err) => {
                 eprintln!("MPD queue action: {err}");
                 self.rows = std::mem::take(&mut self.mutation_rows);
+                if let Mutation::AddSelectedMusic { files, added, .. } = &mutation {
+                    for file in files.iter().take(*added) {
+                        self.picker_files.retain(|_, selected| selected != file);
+                    }
+                    self.picker_range_base = None;
+                    app.invoke_show_status(if *added > 0 {
+                        format!("{added} added; {} still selected", self.picker_files.len()).into()
+                    } else {
+                        err.clone().into()
+                    });
+                    self.show(app, "");
+                    return;
+                }
                 if matches!(mutation, Mutation::CreatePlaylist(_, _)) {
                     app.set_playlist_entry_error(err.into());
                 } else {
@@ -942,6 +1206,7 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
                 ],
                 S::Playlist(name) => vec![
                     Entry::Navigate("Browse Songs", View::PlaylistSongs(name.clone())),
+                    Entry::Navigate("Select Music", View::SelectMusic(name.clone())),
                     Entry::Action("Play Playlist", A::PlayNow),
                     Entry::Action("Shuffle Playlist", A::Shuffle),
                     Entry::Action("Play Next", A::PlayNext),
@@ -993,6 +1258,18 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
                     .map(|p| Entry::Playlist(p.name)),
             );
             page(rows, offset)
+        }
+        View::SelectMusic(_) => {
+            let mut rows = Vec::new();
+            if offset == 0 {
+                rows.push(Entry::CommitSelected);
+            }
+            rows.extend(
+                mpd::list_songs(offset.saturating_sub(1), PAGE + 1 - rows.len())?
+                    .into_iter()
+                    .map(Entry::PickerSong),
+            );
+            rows
         }
         View::Songs => mpd::list_songs(offset, limit)?
             .into_iter()
@@ -1101,6 +1378,28 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
                         }
                     })
                 }
+                Job::PickerRange(generation, start, stop, end) => {
+                    let result = mpd::song_files_in_range(start, stop);
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(app) = weak.upgrade() {
+                            controller
+                                .lock()
+                                .unwrap()
+                                .complete_picker_range(&app, &tx, generation, end, result);
+                        }
+                    })
+                }
+                Job::BulkSelect(generation, invert) => {
+                    let result = mpd::all_song_files();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(app) = weak.upgrade() {
+                            controller
+                                .lock()
+                                .unwrap()
+                                .complete_bulk(&app, generation, invert, result);
+                        }
+                    })
+                }
                 Job::Fetch(request) => {
                     let result = fetch(&request.view, request.offset);
                     slint::invoke_from_event_loop(move || {
@@ -1112,7 +1411,7 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
                         }
                     })
                 }
-                Job::Mutate(mutation, generation) => {
+                Job::Mutate(mut mutation, generation) => {
                     let result = mutation.run();
                     // Refresh even on partial command-list failure; never pretend it rolled back.
                     let _ = status_sender.send(StatusCommand::Refresh);
@@ -1164,6 +1463,36 @@ pub fn install(app: &AppWindow, status_sender: mpsc::Sender<StatusCommand>) {
     app.on_browse_open(move |index| {
         if let Some(app) = weak.upgrade() {
             controller.lock().unwrap().open(index, &app, &requests);
+        }
+    });
+    let controller = browser.clone();
+    let weak = app.as_weak();
+    let requests = tx.clone();
+    app.on_browse_pick_space(move || {
+        if let Some(app) = weak.upgrade() {
+            controller.lock().unwrap().picker_space(&app, &requests);
+        }
+    });
+    let controller = browser.clone();
+    let weak = app.as_weak();
+    let requests = tx.clone();
+    app.on_browse_shift_step(move |delta| {
+        if let Some(app) = weak.upgrade() {
+            controller
+                .lock()
+                .unwrap()
+                .shift_picker(delta, &app, &requests);
+        }
+    });
+    let controller = browser.clone();
+    let weak = app.as_weak();
+    let requests = tx.clone();
+    app.on_browse_bulk_select(move |invert| {
+        if let Some(app) = weak.upgrade() {
+            controller
+                .lock()
+                .unwrap()
+                .picker_bulk(invert, &app, &requests);
         }
     });
     let controller = browser.clone();
@@ -1245,6 +1574,9 @@ mod tests {
                             (request, entries)
                         }
                         Job::FindPlaylist(_, _) => panic!("No saved playlists in this test"),
+                        Job::BulkSelect(_, _) | Job::PickerRange(_, _, _, _) => {
+                            panic!("No selection in this test")
+                        }
                         Job::JumpLast(mut request) => {
                             let (offset, entries) = last_page(|offset| Ok(rows(offset))).unwrap();
                             request.offset = offset;
@@ -1498,6 +1830,132 @@ mod tests {
         assert_eq!(add.view(), View::Songs);
         assert_eq!(add.selected, 1);
         assert!(rx.try_recv().is_err());
+
+        let picker_song = |index: usize| {
+            Entry::PickerSong(mpd::Song {
+                file: format!("{index}.flac"),
+                title: format!("Song {index}"),
+                ..Default::default()
+            })
+        };
+        let mut picker = Browser {
+            stack: vec![
+                View::Playlists,
+                View::Actions(mpd::QueueSource::Playlist("List".into()), "List".into()),
+                View::SelectMusic("List".into()),
+            ],
+            history: vec![
+                Page {
+                    rows: vec![Entry::Playlist("List".into())],
+                    offset: 0,
+                    selected: 0,
+                    more: false,
+                },
+                Page {
+                    rows: vec![Entry::Navigate(
+                        "Select Music",
+                        View::SelectMusic("List".into()),
+                    )],
+                    offset: 0,
+                    selected: 0,
+                    more: false,
+                },
+            ],
+            rows: std::iter::once(Entry::CommitSelected)
+                .chain((0..5).map(picker_song))
+                .collect(),
+            selected: 1,
+            more: true,
+            picker_cache: (0..5).map(|i| (i, format!("{i}.flac"))).collect(),
+            ..Default::default()
+        };
+        picker.show(&app, "");
+        picker.picker_space(&app, &tx);
+        assert_eq!(picker.selected, 2);
+        assert_eq!(picker.picker_files.keys().copied().collect::<Vec<_>>(), [0]);
+        picker.shift_picker(1, &app, &tx);
+        assert_eq!(
+            picker.picker_files.keys().copied().collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        picker.picker_bulk(false, &app, &tx);
+        assert!(matches!(rx.try_recv().unwrap(), Job::BulkSelect(_, false)));
+        picker.complete_bulk(
+            &app,
+            picker.generation,
+            false,
+            Ok((0..8).map(|i| format!("{i}.flac")).collect()),
+        );
+        assert_eq!(picker.picker_files.len(), 8);
+        picker.picker_bulk(true, &app, &tx);
+        assert!(matches!(rx.try_recv().unwrap(), Job::BulkSelect(_, true)));
+        picker.complete_bulk(
+            &app,
+            picker.generation,
+            true,
+            Ok((0..8).map(|i| format!("{i}.flac")).collect()),
+        );
+        assert!(picker.picker_files.is_empty());
+        picker.selected = 5;
+        picker.show(&app, "");
+        picker.shift_picker(1, &app, &tx);
+        let Job::Fetch(request) = rx.try_recv().unwrap() else {
+            panic!("next picker page");
+        };
+        assert_eq!(request.offset, 6);
+        picker.complete(&app, &tx, request, Ok((5..11).map(picker_song).collect()));
+        assert_eq!(
+            picker.picker_files.keys().copied().collect::<Vec<_>>(),
+            [4, 5]
+        );
+        picker.picker_bulk(true, &app, &tx);
+        assert!(matches!(rx.try_recv().unwrap(), Job::BulkSelect(_, true)));
+        picker.complete_bulk(
+            &app,
+            picker.generation,
+            true,
+            Ok((0..8).map(|i| format!("{i}.flac")).collect()),
+        );
+        assert_eq!(picker.picker_files.len(), 6);
+        picker.rows = std::iter::once(Entry::CommitSelected)
+            .chain((0..5).map(picker_song))
+            .collect();
+        picker.offset = 0;
+        picker.selected = 0;
+        picker.show(&app, "");
+        picker.open(0, &app, &tx);
+        let Job::Mutate(mut mutation, generation) = rx.try_recv().unwrap() else {
+            panic!("batch add");
+        };
+        if let Mutation::AddSelectedMusic { added, files, .. } = &mut mutation {
+            assert_eq!(files.len(), 6);
+            *added = 2;
+        } else {
+            panic!("wrong mutation");
+        }
+        picker.finish(
+            &app,
+            &tx,
+            generation,
+            mutation,
+            Err("partial addition".into()),
+        );
+        assert_eq!(picker.view(), View::SelectMusic("List".into()));
+        assert_eq!(picker.picker_files.len(), 4);
+        picker.open(0, &app, &tx);
+        let Job::Mutate(mutation, generation) = rx.try_recv().unwrap() else {
+            panic!("retry");
+        };
+        assert!(matches!(&mutation, Mutation::AddSelectedMusic { files, .. } if files.len() == 4));
+        picker.finish(&app, &tx, generation, mutation, Ok(()));
+        assert_eq!(picker.view(), View::PlaylistSongs("List".into()));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Job::Fetch(Request {
+                view: View::PlaylistSongs(_),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1618,17 +2076,27 @@ mod tests {
             S::Folder("root/child".into()),
         ] {
             let rows = fetch(&View::Actions(source.clone(), "Title".into()), 0).unwrap();
-            assert_eq!(rows.len(), 5);
+            let actions_start = if matches!(source, S::Playlist(_)) {
+                2
+            } else {
+                1
+            };
+            assert_eq!(rows.len(), actions_start + 4);
             assert!(!rows[0].is_leaf());
+            if actions_start == 2 {
+                assert!(
+                    matches!(&rows[1], Entry::Navigate("Select Music", View::SelectMusic(name)) if name == "List")
+                );
+            }
             for (row, action) in
-                rows[1..]
+                rows[actions_start..]
                     .iter()
                     .zip([A::PlayNow, A::Shuffle, A::PlayNext, A::Append])
             {
                 assert!(matches!(row, Entry::Action(_, value) if *value == action));
                 assert!(row.is_leaf());
             }
-            assert!(rows[2].is_shuffle());
+            assert!(rows[actions_start + 1].is_shuffle());
             assert!(Mutation::Source(source.clone(), A::Shuffle).starts_playback());
             assert!(!Mutation::Source(source, A::Append).starts_playback());
         }

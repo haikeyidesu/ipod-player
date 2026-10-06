@@ -10,6 +10,25 @@
 | `l` / `→` / `Enter` | Right/Open | Open selected menu item |
 | `g` / `G` | First/Last | Jump to the first/last item, across pages |
 
+## Playlist song selection
+
+In a saved playlist's options, choose **Select Music** to mark songs from the
+entire paginated library. This picker does not affect the active queue.
+
+| Key | Picker action |
+| --- | --- |
+| `Space` | Toggle focused song and move down one row |
+| `Shift+j` / `Shift+↓` or `Shift+k` / `Shift+↑` | Extend the selection from the anchor across pages |
+| `a` | Select all library songs (background scan) |
+| `A` | Invert selection across the whole library (background scan) |
+| `Enter` / centre on a song | Toggle that song without moving |
+| `Enter` / centre on **Add Selected** | Add marked songs to the saved playlist and show its updated songs |
+| `h` / `Esc` / MENU | Discard the marks and return without adding songs |
+
+The **Add Selected** row shows the marked-song count. A batch error keeps songs
+that were not added selected, so retrying does not duplicate successful additions.
+Outside this picker, Space remains Play/Pause.
+
 ## MPD mixer volume
 
 - `,` lowers and `.` raises the **MPD internal mixer** by 5 percentage points

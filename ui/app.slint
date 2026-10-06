@@ -721,11 +721,13 @@ export component AppWindow inherits Window {
         running: false;
         triggered => { root.menu-wheel-remainder = 0px; self.stop(); }
     }
+
     status-dismiss := Timer {
         interval: 1800ms;
         running: false;
         triggered => { root.status-showing = false; self.stop(); }
     }
+
     show-status(message) => {
         if root.status-showing { status-dismiss.restart(); }
         else { status-dismiss.start(); }
@@ -801,6 +803,10 @@ export component AppWindow inherits Window {
     callback browse-back();
     callback browse-step(int);
     callback browse-jump(bool);
+    callback browse-pick-space();
+    callback browse-shift-step(int);
+    callback browse-bulk-select(bool);
+    in-out property <bool> picker-active: false;
     callback refresh-queue();
     callback refresh-settings();
 
@@ -905,6 +911,21 @@ export component AppWindow inherits Window {
             // Leave macOS shortcuts (Cmd, Ctrl, Option) untouched.
             if event.modifiers.meta || event.modifiers.control || event.modifiers.alt {
                 return reject;
+            }
+            // Song-picker shortcuts never trigger transport or normal browser actions.
+            if root.picker-active && (event.text == "a" || event.text == "A") {
+                root.browse-bulk-select(event.text == "A");
+                return accept;
+            }
+            if root.picker-active && event.text == Key.Space {
+                root.browse-pick-space();
+                return accept;
+            }
+            if root.picker-active && event.modifiers.shift
+                && (event.text == "j" || event.text == "J" || event.text == "k" || event.text == "K"
+                    || event.text == Key.DownArrow || event.text == Key.UpArrow) {
+                root.browse-shift-step(event.text == "k" || event.text == "K" || event.text == Key.UpArrow ? -1 : 1);
+                return accept;
             }
             // Vim-style navigation keys
             if event.text == "j" || event.text == Key.DownArrow {

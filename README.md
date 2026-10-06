@@ -29,6 +29,8 @@ Engineering overview, audit findings and verification results:
   keyboard, Return to confirm, Escape/MENU to cancel. An empty playlist briefly uses
   a library song in the saved playlist and removes it; the active queue is untouched.
   Failed cleanup is reported in the naming pane. Song actions also add to existing playlists.
+- A playlist's **Select Music** option lets you mark songs across the library, then add
+  the marked songs together; see [picker keybindings](VIM_KEYBINDINGS.md).
 - Shuffle Queue (Home or Queue Actions) reorders only existing entries, preserving
   the current track and playing/paused/stopped state. MPD random mode is unchanged.
 - Randomise Play replaces the queue with the entire MPD library, shuffles and starts

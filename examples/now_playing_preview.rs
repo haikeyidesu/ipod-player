@@ -691,6 +691,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(Duration::from_millis(1000));
     slint::platform::update_timers_and_animations();
     assert!(!app.get_status_showing());
+    let picker_events = Rc::new(RefCell::new(Vec::new()));
+    let received = picker_events.clone();
+    app.on_browse_pick_space(move || received.borrow_mut().push("space".to_string()));
+    let received = picker_events.clone();
+    app.on_browse_bulk_select(move |invert| {
+        received
+            .borrow_mut()
+            .push(if invert { "invert" } else { "all" }.into())
+    });
+    app.set_picker_active(true);
+    let before_transport = transports.borrow().len();
+    key(&app, slint::platform::Key::Space);
+    key(&app, "a");
+    key(&app, "A");
+    assert_eq!(&*picker_events.borrow(), &["space", "all", "invert"]);
+    assert_eq!(transports.borrow().len(), before_transport);
+    app.set_picker_active(false);
     println!(
         "PASS: direct seek, carousel, lyrics, status strip, progress drag, LCD activation and virtual wheel"
     );

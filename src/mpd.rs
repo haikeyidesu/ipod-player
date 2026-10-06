@@ -657,6 +657,79 @@ fn create_playlist_using(
     Ok(())
 }
 
+/// Return a consistent, paged scan of library files for whole-library selection.
+/// Song metadata is never fetched in one unbounded MPD response.
+pub fn all_song_files() -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    loop {
+        let songs = list_songs(files.len(), 128)?;
+        let count = songs.len();
+        files.extend(songs.into_iter().map(|song| song.file));
+        if count < 128 {
+            return Ok(files);
+        }
+    }
+}
+
+pub fn song_files_in_range(start: usize, end: usize) -> Result<Vec<(usize, String)>, String> {
+    let mut files = Vec::new();
+    let mut offset = start;
+    while offset <= end {
+        let size = (end - offset + 1).min(128);
+        let songs = list_songs(offset, size)?;
+        if songs.len() != size {
+            return Err("Library changed while selecting songs".into());
+        }
+        files.extend(
+            songs
+                .into_iter()
+                .enumerate()
+                .map(|(i, song)| (offset + i, song.file)),
+        );
+        offset += size;
+    }
+    Ok(files)
+}
+
+/// Add tracks to a saved playlist in selection order, never to the active queue.
+/// Report how many succeeded if a later command fails, so retries cannot duplicate them.
+pub fn add_songs_to_playlist(name: &str, files: &[String]) -> Result<(), (usize, String)> {
+    add_songs_to_playlist_using(name, files, list_playlists, |cmd| query(cmd).map(|_| ()))
+}
+
+fn add_songs_to_playlist_using(
+    name: &str,
+    files: &[String],
+    mut list: impl FnMut() -> Result<Vec<Playlist>, String>,
+    mut command: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), (usize, String)> {
+    if files.is_empty() {
+        return Err((0, "Select at least one song".into()));
+    }
+    let name = playlist_name(name).map_err(|err| (0, err))?;
+    let commands = files
+        .iter()
+        .map(|file| playlist_add_command(name, file))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| (0, err))?;
+    if !list()
+        .map_err(|err| (0, err))?
+        .iter()
+        .any(|p| p.name == name)
+    {
+        return Err((0, "Saved playlist no longer exists".into()));
+    }
+    for (index, cmd) in commands.iter().enumerate() {
+        command(cmd).map_err(|err| {
+            (
+                index,
+                format!("Added {index} of {} songs; {err}", files.len()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Seek only the item for which the UI started its preview. Do not send play or
 /// pause: MPD preserves the current playing/paused state when seeking this ID.
 pub fn seek(id: u64, seconds: f64) -> Result<(), String> {
@@ -1638,6 +1711,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("temporary song"));
+    }
+
+    #[test]
+    fn multi_song_playlist_addition_preflights_and_reports_partial_progress() {
+        let files = vec!["one.flac".into(), "two.flac".into(), "three.flac".into()];
+        let commands = std::cell::RefCell::new(Vec::new());
+        let result = add_songs_to_playlist_using(
+            "Saved",
+            &files,
+            || {
+                Ok(vec![Playlist {
+                    name: "Saved".into(),
+                }])
+            },
+            |cmd| {
+                commands.borrow_mut().push(cmd.to_string());
+                if commands.borrow().len() == 2 {
+                    Err("offline".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err().0, 1);
+        assert_eq!(
+            &*commands.borrow(),
+            &[
+                "playlistadd \"Saved\" \"one.flac\"",
+                "playlistadd \"Saved\" \"two.flac\"",
+            ]
+        );
+        assert!(
+            commands
+                .borrow()
+                .iter()
+                .all(|cmd| !cmd.starts_with("addid") && !cmd.starts_with("clear"))
+        );
+        let bad = vec!["one.flac".into(), "bad\nfile".into()];
+        assert!(
+            add_songs_to_playlist_using(
+                "Saved",
+                &bad,
+                || panic!("validation precedes network"),
+                |_| panic!("no partial write")
+            )
+            .is_err()
+        );
+        assert!(
+            add_songs_to_playlist_using(
+                "Missing",
+                &files,
+                || Ok(Vec::new()),
+                |_| panic!("no writes to missing list")
+            )
+            .is_err()
+        );
     }
 
     #[test]
