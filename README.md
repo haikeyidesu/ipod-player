@@ -111,12 +111,13 @@ target/bundle/macos/iPod Player.app
       LICENSE
       THIRD_PARTY_NOTICES.md
       licenses/
-      AppIcon.icns              # optional, when supplied
+      AppIcon.icns              # generated from .icon, or copied from .icns
 ```
 
 Custom `CARGO_TARGET_DIR` is respected. Existing generated bundles are preserved
-as `.previous-<timestamp>` siblings. See [custom icon instructions](assets/icon/README.md).
-No final icon is supplied yet; the generic macOS icon is expected.
+as `.previous-<timestamp>` siblings. The editable Icon Composer source is at
+`assets/icon/AppIcon.icon`; full Xcode renders it into an ICNS during packaging.
+See [icon build and fallback instructions](assets/icon/README.md).
 
 ## Install and launch locally
 

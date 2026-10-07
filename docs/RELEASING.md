@@ -9,7 +9,7 @@ cargo fmt --check
 cargo check --locked
 cargo test --locked
 MACOSX_DEPLOYMENT_TARGET=12.0 cargo build --release --locked
-python3 scripts/bundle-macos.py # also installs /Applications/iPod Player.app
+python3 scripts/bundle-macos.py --no-install # verify without replacing /Applications/iPod Player.app
 APP="$PWD/target/bundle/macos/iPod Player.app"
 plutil -p "$APP/Contents/Info.plist"
 file "$APP/Contents/MacOS/ipod-player"
@@ -62,7 +62,9 @@ checkout. Do not rename or delete your working source tree just to test this.
 The script uses **ad-hoc signing**. This supports local testing but does not provide
 an Apple-trusted distribution identity. Before sharing downloads broadly:
 
-1. Supply an original/licensed app icon (`assets/icon/AppIcon.icns`).
+1. Review the included AI-generated `assets/icon/AppIcon.icon` artwork for
+   branding/rights suitability; replace it if needed. Full Xcode builds the
+   `.icon`, or a binary `assets/icon/AppIcon.icns` can be used as a fallback.
 2. Complete the dependency license review and include required notices.
 3. Use an Apple Developer account and a **Developer ID Application** certificate.
    Sign with hardened runtime and secure timestamp; test required entitlements

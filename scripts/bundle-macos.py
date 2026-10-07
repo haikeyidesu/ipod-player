@@ -19,6 +19,44 @@ def run(*args, **kwargs):
     return subprocess.run(args, cwd=ROOT, check=True, **kwargs)
 
 
+def add_icon(config, resources, stage):
+    """Rasterize an Icon Composer source for our macOS 12-compatible bundle."""
+    source = ROOT / config['icon']
+    fallback = source.with_suffix('.icns')
+    icon = resources / 'AppIcon.icns'
+    if source.is_dir():
+        developer = Path(run('xcode-select', '-p', capture_output=True, text=True).stdout.strip())
+        ictool = developer.parent / 'Applications/Icon Composer.app/Contents/Executables/ictool'
+        if not ictool.is_file():
+            raise RuntimeError('AppIcon.icon requires full Xcode with Icon Composer (select it using xcode-select)')
+        png = stage / 'icon-source.png'
+        run(str(ictool), str(source), '--export-image', '--output-file', str(png),
+            '--platform', 'macOS', '--rendition', 'Default', '--width', '1024',
+            '--height', '1024', '--scale', '1')
+        iconset = stage / 'AppIcon.iconset'
+        iconset.mkdir()
+        for size in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                pixels = size * scale
+                suffix = '@2x' if scale == 2 else ''
+                output = iconset / f'icon_{size}x{size}{suffix}.png'
+                run('/usr/bin/sips', '-s', 'format', 'png', '-z', str(pixels),
+                    str(pixels), str(png), '--out', str(output), stdout=subprocess.DEVNULL)
+        run('/usr/bin/iconutil', '-c', 'icns', str(iconset), '-o', str(icon))
+    elif source.exists():
+        raise RuntimeError(f'Icon Composer source must be a .icon directory: {source}')
+    elif fallback.is_file():
+        shutil.copy2(fallback, icon)
+    elif fallback.exists():
+        raise RuntimeError(f'Expected an ICNS file, not a directory: {fallback}')
+    else:
+        print('No AppIcon.icon or AppIcon.icns supplied; using the default macOS icon.')
+        return False
+    if icon.read_bytes()[:4] != b'icns':
+        raise RuntimeError(f'Generated icon is not a valid ICNS file: {icon}')
+    return True
+
+
 def install(bundle, parent):
     """Stage a full copy before replacing an installed app; retain the old bundle."""
     parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +90,7 @@ def main():
     parser.add_argument('--no-install', action='store_true', help='Build and verify only; do not replace the installed app')
     args = parser.parse_args()
     if sys.platform != 'darwin':
-        raise SystemExit('This bundle script requires macOS, Xcode command-line tools and Swift.')
+        raise SystemExit('This bundle script requires macOS and Xcode command-line tools.')
     host = next(line.split(': ', 1)[1] for line in run('rustc', '-vV', capture_output=True, text=True).stdout.splitlines() if line.startswith('host: '))
     metadata = json.loads(run('cargo', 'metadata', '--locked', '--format-version=1', '--filter-platform', host, capture_output=True, text=True).stdout)
     package = next(p for p in metadata['packages'] if Path(p['manifest_path']) == ROOT / 'Cargo.toml')
@@ -90,14 +128,8 @@ def main():
             'NSPrincipalClass': 'NSApplication',
             'NSHumanReadableCopyright': 'Copyright © 2026 haikeyidesu. MIT; dependencies retain their licenses.',
         }
-        icon = ROOT / config['icon']
-        if icon.exists():
-            if icon.read_bytes()[:4] != b'icns':
-                raise RuntimeError('AppIcon.icns does not have an icns header')
-            shutil.copy2(icon, resources / 'AppIcon.icns')
+        if add_icon(config, resources, stage):
             info['CFBundleIconFile'] = 'AppIcon.icns'
-        else:
-            print('No AppIcon.icns supplied; the bundle will use the default macOS icon.')
         with (contents / 'Info.plist').open('wb') as output:
             plistlib.dump(info, output)
         (contents / 'PkgInfo').write_bytes(b'APPL????')
@@ -114,8 +146,8 @@ def main():
             library = line.strip().split(' (', 1)[0]
             if not library.startswith(('/System/Library/', '/usr/lib/', '@rpath/libswift')):
                 raise RuntimeError('Unbundled non-system dependency: ' + library)
-        # The Swift bridge adds development-toolchain rpaths. Remove those from
-        # the bundled copy; keep the OS Swift runtime path (/usr/lib/swift).
+        # Remove any developer-toolchain rpaths from the bundled copy; keep
+        # system runtime paths such as /usr/lib/swift if present.
         loads = run('/usr/bin/otool', '-l', str(executable), capture_output=True, text=True).stdout.splitlines()
         for index, line in enumerate(loads):
             if line.strip() == 'cmd LC_RPATH':
