@@ -49,8 +49,9 @@ This includes build-time packages conservatively; presence in the inventory does
 not mean a crate is linked into the executable. If any crate omits standalone
 license files, `REVIEW-MISSING-LICENSES.txt` lists it for release review.
 
-The MediaPlayer crate’s Swift bridge is statically linked. Apple frameworks and
-the system Swift runtime remain OS dependencies, not vendored libraries.
+The separate `mpd-now-playing` helper owns the MediaPlayer Swift bridge and
+has its own dependency/license review. Apple frameworks and the system Swift
+runtime remain OS dependencies, not vendored libraries.
 Review dependency license obligations and any missing notices before public
 binary distribution, especially when updating Cargo.lock. Generated inventory is
 an aid to compliance, not a legal audit.

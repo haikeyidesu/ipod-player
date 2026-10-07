@@ -14,8 +14,9 @@ Strict all-target Clippy reports ten existing style/iterator warnings.
 - `main.rs`: composition, status-command channel, playback polling and snapshot
   application. One worker serializes transport/seek/volume commands. Poll delay
   is one second playing and five seconds paused/stopped, plus command refreshes.
-  Changed snapshots enter Slint through `invoke_from_event_loop`; Control Center
-  receives that same snapshot, not an independent MPD query.
+  Changed snapshots enter Slint through `invoke_from_event_loop`. The separate
+  `music-stuff/mpd-now-playing` login helper owns Control Center, independently
+  polling MPD so it still works after this UI quits.
 - `mpd.rs`: TCP protocol, parsing, library queries and queue operations. No Slint
   dependencies. Two-second socket timeouts; large collection mutations allow
   120 seconds. Stable song IDs bind seeks and queue actions. Command lists are
@@ -42,10 +43,10 @@ Strict all-target Clippy reports ten existing style/iterator warnings.
   marquee, volume and passive texture/status components own presentation only.
   Rust supplies snapshots/models; Slint callbacks enqueue work rather than doing
   network I/O. The carousel retains both panels to preserve transition behavior.
-- `platform/`: AppKit resize/focus/pinning adapter, battery subprocess, MediaPlayer
-  bridge. AppKit ownership is main-thread-only. RAII releases native monitors and
-  command tokens. `window_settings.rs` handles validated geometry and atomic,
-  debounced persistence; native coordinates are not Slint-scaled coordinates.
+- `platform/macos.rs`: AppKit resize/focus/pinning adapter; the battery subprocess
+  is separate. AppKit ownership is main-thread-only. The independent helper owns
+  MediaPlayer registrations. `window_settings.rs` handles validated geometry and
+  atomic, debounced persistence; native coordinates are not Slint-scaled coordinates.
 
 ## Prioritized findings (baseline source audit)
 

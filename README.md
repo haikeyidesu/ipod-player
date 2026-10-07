@@ -53,8 +53,9 @@ Engineering overview, audit findings and verification results:
 - Single-click row selection; unified double-click, Enter/l/Right and centre activation.
 - Selectable/draggable MPD mixer-volume slider, global `,`/`.` volume shortcuts,
   crossfade, repeat and random mode (never macOS system volume).
-- macOS Now Playing / Control Center metadata and transport, synchronized with MPD
-  (including external changes from rmpc).
+- macOS Now Playing / Control Center metadata, artwork and transport are provided
+  by the separately installed `mpd-now-playing` helper, which remains available
+  after quitting this UI. The helper is maintained in a separate repository.
 
 See [keyboard and seeking controls](VIM_KEYBINDINGS.md).
 
@@ -74,9 +75,9 @@ The app does **not** bundle, launch, configure or silently install MPD.
 ### Building
 
 - Rust/Cargo (edition 2024 capable; verified with Rust 1.98.1).
-- Xcode or Xcode command-line tools, including the macOS SDK, Swift, `codesign`,
-  `otool` and `install_name_tool`. MediaPlayer builds a static Swift bridge using
-  Swift Package Manager; Swift tools 5.9+ are needed.
+- Xcode or Xcode command-line tools, including the macOS SDK, `codesign`,
+  `otool` and `install_name_tool`. The optional separate MPD Now Playing helper
+  uses a static MediaPlayer Swift bridge and requires Swift tools 5.9+.
 - Python 3 for packaging. Initial Cargo dependency downloads need internet access.
 
 ```sh
@@ -120,7 +121,9 @@ No final icon is supplied yet; the generic macOS icon is expected.
 ## Install and launch locally
 
 Quit the running app **before rebuilding**, so the script can safely replace its
-installed copy and two processes do not compete for Control Center ownership.
+installed copy. Install the independent MPD Now Playing helper separately to
+retain macOS Control Center controls when this app is quit. Older installed
+copies of the UI still publish a competing Control Center session.
 The build installs the app automatically in the system `/Applications` folder (write permission required);
 previous installed copies are preserved as timestamped `.previous-*` siblings:
 

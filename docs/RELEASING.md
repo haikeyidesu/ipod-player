@@ -46,7 +46,9 @@ Manual checklist:
 - Finder launches the copied app with no terminal or source-directory dependency.
 - Fonts/icons, artwork fallback and Aqua UI render; native resizing still works.
 - MPD at localhost:6600 connects and audio is audible (the bundle must not start MPD).
-- Now Playing / Control Center metadata, pause/resume and next/previous work.
+- With the separate MPD Now Playing login helper installed, Control Center
+  metadata/artwork and pause/resume/next/previous work both with the UI open and
+  after quitting it. Without the helper, the UI does not publish Control Center.
 - Close/reopen from Finder; only one player process is running.
 - Verify with MPD unavailable: a usable window, no silent MPD installation/startup.
 - Test the declared minimum macOS version and each supported CPU architecture on

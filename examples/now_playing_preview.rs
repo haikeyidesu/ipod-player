@@ -151,10 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     key(&app, "<");
     key(&app, ">");
     key(&app, " ");
-    assert_eq!(
-        *transports.borrow(),
-        ["play-pause", "previous", "next"]
-    );
+    assert_eq!(*transports.borrow(), ["play-pause", "previous", "next"]);
     assert_eq!(seeks.borrow().len(), 4);
     key(&app, "h");
     assert_eq!(app.get_carousel_page(), 0);

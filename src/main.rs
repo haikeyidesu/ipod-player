@@ -4,7 +4,6 @@ mod artwork;
 mod library;
 mod lyrics;
 mod mpd;
-mod platform;
 #[cfg(any(target_os = "macos", test))]
 mod window_settings;
 
@@ -76,11 +75,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let app = AppWindow::new()?;
-    // One worker serializes transport commands and reads state. Library requests
+    // The independent mpd-now-playing helper owns macOS MediaPlayer; this UI
+    // only handles its own MPD commands and snapshots. Library requests
     // run on their own worker and can request an immediate state refresh.
     let (sender, receiver) = std::sync::mpsc::channel::<StatusCommand>();
-    #[cfg(target_os = "macos")]
-    let _now_playing = platform::macos_now_playing::Bridge::install(sender.clone())?;
     library::install(&app, sender.clone());
     let artwork_sender = artwork::start(&app);
     let lyrics = lyrics::LyricsService::install(&app);
@@ -134,8 +132,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let artwork_sender = artwork_sender.clone();
                 if slint::invoke_from_event_loop(move || {
                     if let Some(app) = weak.upgrade() {
-                        #[cfg(target_os = "macos")]
-                        platform::macos_now_playing::publish(&state);
                         if app.get_player_file().as_str() != state.file {
                             app.set_player_file(state.file.clone().into());
                             app.set_player_art(slint::Image::default());
