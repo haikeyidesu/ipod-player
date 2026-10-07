@@ -92,6 +92,7 @@ impl Geometry {
 #[serde(default)]
 pub struct Preferences {
     pub always_on_top: bool,
+    pub edge_tuck_enabled: bool,
     pub geometry: Option<Geometry>,
     // Do not discard future/unrelated settings when saving window preferences.
     #[serde(flatten)]
@@ -136,6 +137,10 @@ impl Store {
     }
     pub fn pin(&mut self, value: bool) {
         self.preferences.always_on_top = value;
+        self.changed = Some(Instant::now());
+    }
+    pub fn edge_tuck(&mut self, value: bool) {
+        self.preferences.edge_tuck_enabled = value;
         self.changed = Some(Instant::now());
     }
     pub fn due(&self, now: Instant) -> bool {
@@ -249,6 +254,9 @@ mod tests {
         let path = dir.join("window.json");
         let mut store = Store::load(Some(path.clone()));
         assert!(!store.preferences.always_on_top);
+        assert!(!store.preferences.edge_tuck_enabled);
+        let legacy: Preferences = serde_json::from_str(r#"{"always_on_top":true}"#).unwrap();
+        assert!(legacy.always_on_top && !legacy.edge_tuck_enabled);
         assert!(store.preferences.geometry.is_none());
         let now = Instant::now();
         store.record(screen().canonical(), now);
@@ -263,6 +271,7 @@ mod tests {
         assert!(!store.due(now + Duration::from_millis(1000)));
         assert!(store.due(now + Duration::from_millis(1250)));
         store.pin(true);
+        store.edge_tuck(true);
         store
             .preferences
             .extra
@@ -275,7 +284,8 @@ mod tests {
         assert!(!store.due(now + Duration::from_secs(10)));
         store.record(screen().canonical(), now);
         store.flush().unwrap();
-        assert!(Store::load(Some(path.clone())).preferences.always_on_top);
+        let restored = Store::load(Some(path.clone())).preferences;
+        assert!(restored.always_on_top && restored.edge_tuck_enabled);
         fs::write(&path, b"corrupt").unwrap();
         assert_eq!(Store::load(Some(path)).preferences, Preferences::default());
         fs::remove_dir_all(dir).unwrap();

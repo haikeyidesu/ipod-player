@@ -113,6 +113,7 @@ enum Entry {
     Setting(String, mpd::PlaybackSetting),
     Info(String),
     PinWindow,
+    TuckWindow,
     ResetWindow,
 }
 impl Entry {
@@ -132,6 +133,7 @@ impl Entry {
             Self::ShuffleQueue => "Shuffle Queue",
             Self::RandomisePlay => "Randomise Play",
             Self::PinWindow => "Always on Top",
+            Self::TuckWindow => "Edge Tuck",
             Self::ResetWindow => "Reset Window Size",
             Self::Clear => "Clear Queue",
             Self::Cancel => "Cancel",
@@ -153,6 +155,14 @@ impl Entry {
             Self::PinWindow => format!(
                 "Always on Top [{}]",
                 if app.get_window_pinned() { "On" } else { "Off" }
+            ),
+            Self::TuckWindow => format!(
+                "Edge Tuck [{}]",
+                if app.get_window_tuck_enabled() {
+                    "On"
+                } else {
+                    "Off"
+                }
             ),
             Self::Navigate(_, View::Volume) => format!(
                 "Volume: {}",
@@ -210,6 +220,7 @@ impl Entry {
                 | Self::Setting(_, _)
                 | Self::Info(_)
                 | Self::PinWindow
+                | Self::TuckWindow
                 | Self::ResetWindow
         )
     }
@@ -747,6 +758,10 @@ impl Browser {
                 app.invoke_window_pin_requested();
                 self.show(app, "");
             }
+            Entry::TuckWindow => {
+                app.invoke_window_tuck_requested();
+                self.show(app, "");
+            }
             Entry::ResetWindow => app.invoke_window_reset_requested(),
             Entry::Artist(name) => self.push(
                 View::Actions(mpd::QueueSource::Artist(name.clone()), name),
@@ -1115,7 +1130,10 @@ fn fetch(view: &View, offset: usize) -> Result<Vec<Entry>, String> {
             ],
             offset,
         ),
-        View::Window => page(vec![Entry::PinWindow, Entry::ResetWindow], offset),
+        View::Window => page(
+            vec![Entry::PinWindow, Entry::TuckWindow, Entry::ResetWindow],
+            offset,
+        ),
         View::Volume => Vec::new(),
         View::Crossfade => page(
             [0, 1, 2, 3, 5, 10]
@@ -1647,7 +1665,15 @@ mod tests {
         app.on_window_reset_requested(move || received.set(received.get() + 1));
         browser.open(0, &app, &tx);
         assert_eq!(browser.rows[0].display_label(&app), "Always on Top [On]");
+        let weak = app.as_weak();
+        app.on_window_tuck_requested(move || {
+            let app = weak.upgrade().unwrap();
+            app.set_window_tuck_enabled(!app.get_window_tuck_enabled());
+        });
         browser.open(1, &app, &tx);
+        assert!(app.get_window_tuck_enabled());
+        assert_eq!(browser.rows[1].display_label(&app), "Edge Tuck [On]");
+        browser.open(2, &app, &tx);
         assert!(app.get_window_pinned());
         assert_eq!(resets.get(), 1);
         browser.open(0, &app, &tx);
@@ -1971,11 +1997,12 @@ mod tests {
         let rows = fetch(&View::Window, 0).unwrap();
         assert_eq!(
             rows.iter().map(Entry::label).collect::<Vec<_>>(),
-            ["Always on Top", "Reset Window Size"]
+            ["Always on Top", "Edge Tuck", "Reset Window Size"]
         );
         assert!(rows.iter().all(Entry::is_leaf));
         assert!(matches!(rows[0], Entry::PinWindow));
-        assert!(matches!(rows[1], Entry::ResetWindow));
+        assert!(matches!(rows[1], Entry::TuckWindow));
+        assert!(matches!(rows[2], Entry::ResetWindow));
     }
 
     #[test]

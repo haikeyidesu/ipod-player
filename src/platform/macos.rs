@@ -7,11 +7,11 @@ use std::{
 };
 
 use block2::RcBlock;
-use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
+use objc2::{AnyThread, MainThreadMarker, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{
     NSApplication, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
-    NSEventMask, NSEventType, NSFloatingWindowLevel, NSScreen, NSView, NSWindow,
-    NSWindowCollectionBehavior,
+    NSEventMask, NSEventType, NSFloatingWindowLevel, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowCollectionBehavior,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -29,6 +29,10 @@ pub struct ResizeMonitor {
     window: Retained<NSWindow>,
     settings: Rc<RefCell<Store>>,
     timer: slint::Timer,
+    hide_timer: Rc<slint::Timer>,
+    tuck: Rc<RefCell<EdgeTuck>>,
+    tracking_view: Retained<NSView>,
+    tracking_area: Retained<NSTrackingArea>,
 }
 
 impl Drop for ResizeMonitor {
@@ -36,9 +40,12 @@ impl Drop for ResizeMonitor {
         // SAFETY: token was returned by addLocalMonitorForEventsMatchingMask_handler.
         unsafe { NSEvent::removeMonitor(&self.token) };
         self.timer.stop();
-        self.settings
-            .borrow_mut()
-            .record(self.window.frame().into(), Instant::now());
+        self.hide_timer.stop();
+        self.tracking_view.removeTrackingArea(&self.tracking_area);
+        self.settings.borrow_mut().record(
+            self.tuck.borrow().shown_or(self.window.frame().into()),
+            Instant::now(),
+        );
         save(&self.settings);
     }
 }
@@ -121,6 +128,7 @@ pub fn prepare(app: &AppWindow) -> Rc<RefCell<Store>> {
         .restored(&screens);
     settings.record(initial, Instant::now());
     app.set_window_pinned(settings.preferences.always_on_top);
+    app.set_window_tuck_enabled(settings.preferences.edge_tuck_enabled);
     app.window().set_size(slint::LogicalSize::new(
         initial.width as f32,
         initial.height as f32,
@@ -264,6 +272,141 @@ fn resized_frame(drag: Drag, mouse: NSPoint) -> NSRect {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Dock {
+    side: Side,
+    shown: Geometry,
+    screen: Geometry,
+}
+const DOCK_THRESHOLD: f64 = 24.0;
+const TUCK_TAB: f64 = 36.0;
+
+impl Dock {
+    fn hidden(self) -> Geometry {
+        Geometry {
+            x: match self.side {
+                Side::Left => self.screen.x + TUCK_TAB - self.shown.width,
+                Side::Right => self.screen.x + self.screen.width - TUCK_TAB,
+            },
+            ..self.shown
+        }
+    }
+}
+
+// A screen shared with another display is not a safe tuck edge: the hidden
+// body would merely move onto that display instead of disappearing.
+fn dock_candidate(frame: Geometry, screen: Geometry, other_screens: &[Geometry]) -> Option<Dock> {
+    if frame.width > screen.width || frame.height > screen.height || screen.width <= TUCK_TAB {
+        return None;
+    }
+    let edge = [
+        (Side::Left, (frame.x - screen.x).abs()),
+        (
+            Side::Right,
+            (frame.x + frame.width - screen.x - screen.width).abs(),
+        ),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    if edge.1 > DOCK_THRESHOLD {
+        return None;
+    }
+    let shown = Geometry {
+        x: if edge.0 == Side::Left {
+            screen.x
+        } else {
+            screen.x + screen.width - frame.width
+        },
+        y: frame
+            .y
+            .clamp(screen.y, screen.y + screen.height - frame.height),
+        ..frame
+    };
+    let dock = Dock {
+        side: edge.0,
+        shown,
+        screen,
+    };
+    let tucked = dock.hidden();
+    let corridor = match edge.0 {
+        Side::Left => (tucked.x, screen.x),
+        Side::Right => (screen.x + screen.width, tucked.x + frame.width),
+    };
+    if other_screens.iter().any(|other| {
+        let vertical = other.y < shown.y + shown.height && other.y + other.height > shown.y;
+        vertical && other.x < corridor.1 && other.x + other.width > corridor.0
+    }) {
+        None
+    } else {
+        Some(dock)
+    }
+}
+
+struct EdgeTuck {
+    enabled: bool,
+    dock: Option<Dock>,
+    hidden: bool,
+    revealed_at: Option<Instant>,
+}
+impl EdgeTuck {
+    fn shown_or(&self, current: Geometry) -> Geometry {
+        self.dock.map_or(current, |dock| dock.shown)
+    }
+    fn reveal(&mut self, window: &NSWindow) {
+        if self.hidden {
+            self.hidden = false;
+            self.revealed_at = Some(Instant::now());
+            if let Some(dock) = self.dock {
+                window.setFrame_display_animate(dock.shown.into(), true, true);
+            }
+        }
+    }
+    fn hide(&mut self, window: &NSWindow) {
+        if !self.hidden
+            && let Some(dock) = self.dock
+        {
+            self.hidden = true;
+            self.revealed_at = None;
+            window.setFrame_display_animate(dock.hidden().into(), true, true);
+        }
+    }
+}
+fn point_in(frame: NSRect, point: NSPoint) -> bool {
+    point.x >= frame.origin.x
+        && point.x < frame.origin.x + frame.size.width
+        && point.y >= frame.origin.y
+        && point.y < frame.origin.y + frame.size.height
+}
+
+fn dock_for_window(window: &NSWindow) -> Option<Dock> {
+    let active = window.screen()?;
+    let visible = Geometry::from(active.visibleFrame());
+    let others = NSScreen::screens(MainThreadMarker::new()?)
+        .iter()
+        .filter(|screen| screen.frame() != active.frame())
+        .map(|screen| Geometry::from(screen.frame()))
+        .collect::<Vec<_>>();
+    dock_candidate(window.frame().into(), visible, &others)
+}
+fn settle_dock(window: &NSWindow, tuck: &RefCell<EdgeTuck>) {
+    let mut tuck = tuck.borrow_mut();
+    if !tuck.enabled {
+        return;
+    }
+    tuck.hidden = false;
+    tuck.revealed_at = None;
+    tuck.dock = dock_for_window(window);
+    if let Some(dock) = tuck.dock {
+        window.setFrame_display_animate(dock.shown.into(), true, true);
+    }
+}
+
 fn frame_difference(a: NSRect, b: NSRect) -> f64 {
     (a.origin.x - b.origin.x)
         .abs()
@@ -307,6 +450,36 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         height: MAX_WIDTH / RATIO,
     });
 
+    let tracking_view = window
+        .contentView()
+        .ok_or("AppKit window has no content view")?;
+    // ActiveAlways delivers enter/exit for the visible tab even when this
+    // LSUIElement app is not active. AppKit owns the hit area as the frame moves.
+    let tracking_area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect {
+                origin: NSPoint { x: 0.0, y: 0.0 },
+                size: NSSize {
+                    width: 0.0,
+                    height: 0.0,
+                },
+            },
+            NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect,
+            Some(&tracking_view),
+            None,
+        )
+    };
+    tracking_view.addTrackingArea(&tracking_area);
+    let tuck = Rc::new(RefCell::new(EdgeTuck {
+        enabled: settings.borrow().preferences.edge_tuck_enabled,
+        dock: None,
+        hidden: false,
+        revealed_at: None,
+    }));
     let original_level = window.level();
     let original_behavior = window.collectionBehavior();
     if let Some(frame) = settings.borrow().preferences.geometry {
@@ -318,6 +491,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     }
     let pin_window = window.clone();
     let pin_settings = settings.clone();
+    let pin_tuck = tuck.clone();
     let weak = app.as_weak();
     app.on_window_pin_requested(move || {
         let Some(app) = weak.upgrade() else {
@@ -334,7 +508,10 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         });
         let mut settings = pin_settings.borrow_mut();
         settings.pin(pinned);
-        settings.record(pin_window.frame().into(), Instant::now());
+        settings.record(
+            pin_tuck.borrow().shown_or(pin_window.frame().into()),
+            Instant::now(),
+        );
         drop(settings);
         app.set_window_pinned(pinned);
         save(&pin_settings);
@@ -349,19 +526,101 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     });
     let reset_window = window.clone();
     let reset_settings = settings.clone();
+    let reset_tuck = tuck.clone();
     app.on_window_reset_requested(move || {
-        let frame = Geometry::from(reset_window.frame())
+        let frame = reset_tuck
+            .borrow()
+            .shown_or(reset_window.frame().into())
             .canonical()
             .restored(&screens());
+        reset_tuck.borrow_mut().dock = None;
+        reset_tuck.borrow_mut().hidden = false;
+        reset_tuck.borrow_mut().revealed_at = None;
         reset_window.setFrame_display(frame.into(), true);
         reset_settings
             .borrow_mut()
             .record(reset_window.frame().into(), Instant::now());
         save(&reset_settings);
     });
+    let mode_tuck = tuck.clone();
+    let mode_settings = settings.clone();
+    let mode_window = window.clone();
+    let weak = app.as_weak();
+    app.on_window_tuck_requested(move || {
+        let enabled = !mode_tuck.borrow().enabled;
+        let mut state = mode_tuck.borrow_mut();
+        if !enabled {
+            if let Some(dock) = state.dock {
+                mode_window.setFrame_display(dock.shown.into(), true);
+            }
+            state.hidden = false;
+            state.revealed_at = None;
+            state.dock = None;
+        }
+        state.enabled = enabled;
+        drop(state);
+        mode_settings.borrow_mut().edge_tuck(enabled);
+        save(&mode_settings);
+        if let Some(app) = weak.upgrade() {
+            app.set_window_tuck_enabled(enabled);
+            app.invoke_show_status(
+                if enabled {
+                    "Edge Tuck On — drag to edge"
+                } else {
+                    "Edge Tuck Off"
+                }
+                .into(),
+            );
+        }
+    });
+
+    let hide_timer = Rc::new(slint::Timer::default());
+    let pending_hide = Rc::new(Cell::new(false));
+    let interacting = Rc::new(Cell::new(false));
+    let hide_window = window.clone();
+    let hide_tuck = tuck.clone();
+    let hide_pending = pending_hide.clone();
+    let hide_interacting = interacting.clone();
+    let hide_weak = app.as_weak();
+    let hide_clock = hide_timer.clone();
+    let schedule_hide: Rc<dyn Fn()> = Rc::new(move || {
+        if hide_pending.replace(true) {
+            return;
+        }
+        let pending = hide_pending.clone();
+        let state = hide_tuck.clone();
+        let window = hide_window.clone();
+        let interaction = hide_interacting.clone();
+        let weak = hide_weak.clone();
+        hide_clock.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(450),
+            move || {
+                pending.set(false);
+                if window.isKeyWindow()
+                    || interaction.get()
+                    || point_in(window.frame(), NSEvent::mouseLocation())
+                {
+                    return;
+                }
+                if weak
+                    .upgrade()
+                    .is_some_and(|app| app.get_playlist_entry_open())
+                {
+                    return;
+                }
+                state.borrow_mut().hide(&window);
+            },
+        );
+    });
+
     let timer = slint::Timer::default();
     let observed_window = window.clone();
     let observed_settings = settings.clone();
+    let observed_tuck = tuck.clone();
+    let observed_pending = pending_hide.clone();
+    let observed_schedule = schedule_hide.clone();
+    let observed_weak = app.as_weak();
     let mut previous_screens = screens();
     timer.start(
         slint::TimerMode::Repeated,
@@ -369,13 +628,35 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         move || {
             let current_screens = screens();
             if previous_screens != current_screens {
-                let frame = Geometry::from(observed_window.frame()).restored(&current_screens);
+                let frame = observed_tuck
+                    .borrow()
+                    .shown_or(observed_window.frame().into())
+                    .restored(&current_screens);
+                observed_tuck.borrow_mut().dock = None;
+                observed_tuck.borrow_mut().hidden = false;
+                observed_tuck.borrow_mut().revealed_at = None;
                 observed_window.setFrame_display(frame.into(), true);
                 previous_screens = current_screens;
             }
+            if !observed_window.isKeyWindow()
+                && !observed_pending.get()
+                && observed_tuck.borrow().dock.is_some()
+                && !observed_tuck.borrow().hidden
+                && !point_in(observed_window.frame(), NSEvent::mouseLocation())
+                && observed_weak
+                    .upgrade()
+                    .is_some_and(|app| !app.get_playlist_entry_open())
+            {
+                observed_schedule();
+            }
             let now = Instant::now();
             let mut settings = observed_settings.borrow_mut();
-            settings.record(observed_window.frame().into(), now);
+            settings.record(
+                observed_tuck
+                    .borrow()
+                    .shown_or(observed_window.frame().into()),
+                now,
+            );
             let due = settings.due(now);
             drop(settings);
             if due {
@@ -390,6 +671,11 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     let debug_resize = std::env::var_os("IPOD_RESIZE_DEBUG").is_some();
     let was_edge = Cell::new(false);
     let resize_window = window.clone();
+    let resize_tuck = tuck.clone();
+    let resize_interacting = interacting.clone();
+    let resize_schedule = schedule_hide.clone();
+    let resize_pending = pending_hide.clone();
+    let resize_hide_timer = hide_timer.clone();
     let focus_weak = app.as_weak();
     let block: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> = RcBlock::new(
         move |event_ptr: NonNull<NSEvent>| -> *mut NSEvent {
@@ -423,14 +709,36 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                     return std::ptr::null_mut();
                 }
             } else if event_type == NSEventType::LeftMouseUp && drag.take().is_some() {
+                resize_interacting.set(false);
+                settle_dock(&resize_window, &resize_tuck);
                 return std::ptr::null_mut();
             }
 
             if event.windowNumber() != resize_window.windowNumber() {
                 return event_ptr.as_ptr();
             }
+            if event_type == NSEventType::MouseEntered
+                || (event_type == NSEventType::MouseMoved && resize_tuck.borrow().hidden)
+            {
+                resize_hide_timer.stop();
+                resize_pending.set(false);
+                resize_tuck.borrow_mut().reveal(&resize_window);
+            } else if event_type == NSEventType::MouseExited {
+                if was_edge.replace(false) {
+                    NSCursor::arrowCursor().set();
+                }
+                resize_schedule();
+            }
+            let was_hidden_click = event_type == NSEventType::LeftMouseDown
+                && (resize_tuck.borrow().hidden
+                    || resize_tuck
+                        .borrow()
+                        .revealed_at
+                        .is_some_and(|at| at.elapsed() < Duration::from_millis(300)));
             let hit = shell_hit(event.locationInWindow(), resize_window.frame().size);
-            if event_type == NSEventType::LeftMouseDown && !matches!(hit, ShellHit::Outside) {
+            if event_type == NSEventType::LeftMouseDown
+                && (was_hidden_click || !matches!(hit, ShellHit::Outside))
+            {
                 // An LSUIElement window can stay visible after another app becomes
                 // active. Only an explicit click may reclaim the keyboard; never
                 // activate it merely because the user switched workspaces.
@@ -445,6 +753,16 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                 // considers this window key after a workspace transition.
                 if let Some(app) = focus_weak.upgrade() {
                     app.invoke_refocus_navigation();
+                }
+                if was_hidden_click {
+                    resize_hide_timer.stop();
+                    resize_pending.set(false);
+                    resize_tuck.borrow_mut().reveal(&resize_window);
+                    if let Some(dock) = resize_tuck.borrow().dock {
+                        resize_window.setFrame_display(dock.shown.into(), true);
+                    }
+                    resize_tuck.borrow_mut().revealed_at = None;
+                    return std::ptr::null_mut();
                 }
             }
             if event_type == NSEventType::MouseMoved {
@@ -466,6 +784,9 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                     let max_width = resize_window.screen().map_or(MAX_WIDTH, |screen| {
                         screen_width_limit(start_frame, edges, screen.visibleFrame())
                     });
+                    resize_interacting.set(true);
+                    resize_hide_timer.stop();
+                    resize_pending.set(false);
                     drag.set(Some(Drag {
                         edges,
                         start_mouse: NSEvent::mouseLocation(),
@@ -482,7 +803,12 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                 if matches!(hit, ShellHit::Move) {
                     // AppKit owns movement; no hand-written coordinate updates.
                     // This includes painted corners and the space outside the circular wheel.
+                    resize_interacting.set(true);
+                    resize_hide_timer.stop();
+                    resize_pending.set(false);
                     resize_window.performWindowDragWithEvent(event);
+                    resize_interacting.set(false);
+                    settle_dock(&resize_window, &resize_tuck);
                     return std::ptr::null_mut();
                 }
             }
@@ -491,6 +817,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     );
 
     let mask = NSEventMask::MouseMoved
+        | NSEventMask::MouseEntered
+        | NSEventMask::MouseExited
         | NSEventMask::LeftMouseDown
         | NSEventMask::LeftMouseDragged
         | NSEventMask::LeftMouseUp;
@@ -504,6 +832,10 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         window,
         settings,
         timer,
+        hide_timer,
+        tuck,
+        tracking_view,
+        tracking_area,
     })
 }
 
@@ -524,6 +856,89 @@ mod tests {
             assert!(pinned.contains(original));
             assert_eq!(pinned_behavior(original, false), original);
         }
+    }
+
+    #[test]
+    fn edge_tuck_preserves_shown_geometry_and_avoids_adjacent_displays() {
+        let screen = Geometry {
+            x: 0.0,
+            y: 24.0,
+            width: 1440.0,
+            height: 876.0,
+        };
+        let frame = Geometry {
+            x: 18.0,
+            y: 110.0,
+            width: 420.0,
+            height: 640.0,
+        };
+        let left = dock_candidate(frame, screen, &[]).unwrap();
+        assert_eq!(left.side, Side::Left);
+        assert_eq!(left.shown.x, 0.0);
+        assert_eq!(left.shown.y, frame.y);
+        assert_eq!(left.hidden().x + left.hidden().width, TUCK_TAB);
+        assert_eq!(left.hidden().y, frame.y);
+        assert_eq!(
+            (left.hidden().width, left.hidden().height),
+            (frame.width, frame.height)
+        );
+        let right_frame = Geometry {
+            x: 1440.0 - 420.0 - 12.0,
+            ..frame
+        };
+        let right = dock_candidate(right_frame, screen, &[]).unwrap();
+        assert_eq!(right.side, Side::Right);
+        assert_eq!(right.shown.x, 1020.0);
+        assert_eq!(right.hidden().x, 1440.0 - TUCK_TAB);
+        assert_eq!(
+            EdgeTuck {
+                enabled: true,
+                dock: Some(right),
+                hidden: true,
+                revealed_at: None
+            }
+            .shown_or(right.hidden()),
+            right.shown
+        );
+        assert!(dock_candidate(Geometry { x: 25.0, ..frame }, screen, &[]).is_none());
+        let neighbour = Geometry {
+            x: -1920.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        assert!(dock_candidate(frame, screen, &[neighbour]).is_none());
+        assert!(dock_candidate(right_frame, screen, &[neighbour]).is_some());
+        let right_neighbour = Geometry {
+            x: 1440.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        assert!(dock_candidate(right_frame, screen, &[right_neighbour]).is_none());
+        assert!(
+            dock_candidate(
+                frame,
+                screen,
+                &[Geometry {
+                    y: 901.0,
+                    ..neighbour
+                }]
+            )
+            .is_some()
+        );
+        assert!(
+            dock_candidate(
+                Geometry {
+                    width: 630.0,
+                    height: 960.0,
+                    ..frame
+                },
+                screen,
+                &[]
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -1,15 +1,17 @@
 # Native window preferences and LCD
 
-Settings → Window contains **Always on Top [On/Off]** and **Reset Window Size**.
+Settings → Window contains **Always on Top [On/Off]**, **Edge Tuck [On/Off]**
+(default Off), and **Reset Window Size**.
 The normal bundle is a dockless `LSUIElement` agent app (verified with the
 window's keyboard focus, native resizing/dragging and Control Center). Pinning
 defaults to Off and uses AppKit's standard floating level plus
 `NSWindowCollectionBehaviorCanJoinAllSpaces`. Other collection flags remain
 untouched. Unpinning restores the original level and entire collection behavior.
-Neither action recreates/activates or moves the window. Fullscreen-app overlays
+Pinning does not recreate/activate or move the window. Fullscreen-app overlays
 are not enabled; no AeroSpace polling or workspace-triggered frame updates are used.
 
-Geometry and pinning share this local, atomic JSON file (no MPD settings):
+Geometry, pinning and the Edge Tuck preference share this local, atomic JSON file
+(no MPD settings):
 
 ```text
 ~/Library/Application Support/io.github.haikeyidesu.ipod-player/window.json
@@ -24,6 +26,21 @@ to a visible screen. Screen layout changes are also checked while running.
 If a desktop is smaller than the minimum size, the minimum is retained and the
 top edge stays reachable. Reset requests 420×640 at the current top-left, clamped
 to the usable desktop; it leaves pinning and unrelated settings untouched.
+
+When Edge Tuck is enabled, drag and release the device within 24 AppKit points
+of an **outer** left/right edge of its current display. It snaps to that edge;
+shared boundaries with another monitor are excluded so the body cannot spill
+onto that monitor. When the window is no longer key and the pointer has left,
+it animates offscreen, leaving a 36-point sliver. Hover over that sliver to
+reveal without activation; click to focus. Hiding waits 450 ms and never runs
+while the window is key, a drag/resize is active, or playlist naming is open.
+Drag the revealed device away to undock. Turning Edge Tuck Off or resetting the
+window reveals/undocks immediately. Pinning remains independent. Only the
+fully shown native frame is saved; relaunching does not reopen half offscreen.
+A changed display layout restores the shown window and undocks it; drag to dock
+again on an available edge. The preference is persisted, but docking itself is
+session-local. This uses an AppKit tracking area and native window-frame
+animation, not a Slint visual translation or another background polling loop.
 
 A 250 ms observation timer writes only after 750 ms without a geometry change.
 Pin/reset actions and orderly shutdown flush immediately. Corrupt settings fall
@@ -58,7 +75,12 @@ both copies do not compete for playback metadata.
 
 ## Native manual checklist
 
-- [ ] Fresh preferences: window is 420×640 and pinning is Off.
+- [ ] Fresh preferences: window is 420×640; pinning and Edge Tuck are Off.
+- [ ] Turn Edge Tuck On, drag to each outer screen edge, click another app and
+      confirm the 36-point sliver remains. Hover to reveal without focus; move
+      away to hide after a short delay. Click the tab to focus. Repeat while
+      pinned; drag away, resize, reset and toggle Off. Repeat with playlist naming
+      open, with a second monitor, and after disconnecting that monitor.
 - [ ] Pin On and switch repeatedly between workspaces on the same display.
       Player remains
       visible and floating at the exact same on-screen size/position, without

@@ -672,6 +672,8 @@ export component AppWindow inherits Window {
     out property <string> status-message: "";
     out property <bool> status-showing: false;
     in-out property <bool> window-pinned: false;
+    in-out property <bool> window-tuck-enabled: false;
+    callback window-tuck-requested();
     callback window-pin-requested();
     callback window-reset-requested();
     in-out property <bool> volume-page: false;
