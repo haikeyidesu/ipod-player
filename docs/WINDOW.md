@@ -32,11 +32,13 @@ or bottom edge: the pointer gesture must carry about one-third of the window
 past the edge before release. AppKit may visibly constrain the moving frame,
 but the gesture still counts. Merely parking it flush or a few pixels away does
 not snap. Shared boundaries with another monitor are excluded so the hidden
-body cannot spill onto that monitor. When the window is no longer key and the
-pointer has left, it animates offscreen, leaving a 36-point sliver on that edge.
-Hover over the sliver to
-reveal without activation; click to focus. Hiding waits 450 ms and never runs
-while the window is key, a drag/resize is active, or playlist naming is open.
+body cannot spill onto that monitor. A deliberate edge drop animates directly
+from the release position to the tucked frame, leaving a 36-point sliver; it
+does not first snap back to the fully shown position. Hover over the sliver to
+reveal without activation; click to focus. Hover reveal is armed after the
+animation, so the pointer left over the tab cannot immediately undo a tuck.
+For a docked window already revealed, passive hiding waits 450 ms until it
+loses focus and the pointer leaves. Playlist naming never triggers a hide.
 Drag the revealed device away to undock. Turning Edge Tuck Off or resetting the
 window reveals/undocks immediately. Pinning remains independent. Only the
 fully shown native frame is saved; relaunching does not reopen half offscreen.
@@ -81,8 +83,9 @@ both copies do not compete for playback metadata.
 - [ ] Fresh preferences: window is 420×640; pinning and Edge Tuck are Off.
 - [ ] Turn Edge Tuck On; park a few pixels from each edge and verify no snap.
       Then drag roughly one-third of the window past each outer left, right and
-      bottom edge, click another app and confirm the 36-point sliver remains.
-      Hover to reveal without focus; move away to hide after a short delay.
+      bottom edge: release should tuck directly, leaving the 36-point sliver,
+      without first snapping into full view. Hover to reveal without focus;
+      move away and click another app to hide after a short delay.
       Click the tab to focus. Repeat while
       pinned; drag away, resize, reset and toggle Off. Repeat with playlist naming
       open, with a second monitor, and after disconnecting that monitor.

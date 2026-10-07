@@ -304,6 +304,7 @@ struct Dock {
 // window beyond the edge. A small gap or a flush placement never qualifies.
 const DOCK_FRACTION: f64 = 1.0 / 3.0;
 const TUCK_TAB: f64 = 36.0;
+const REVEAL_ARM_DELAY: Duration = Duration::from_millis(500);
 
 impl Dock {
     fn hidden(self) -> Geometry {
@@ -433,29 +434,57 @@ struct EdgeTuck {
     dock: Option<Dock>,
     hidden: bool,
     revealed_at: Option<Instant>,
+    hidden_at: Option<Instant>,
+    reveal_armed: bool,
 }
 impl EdgeTuck {
     fn shown_or(&self, current: Geometry) -> Geometry {
         self.dock.map_or(current, |dock| dock.shown)
     }
+    fn can_reveal(&self) -> bool {
+        self.hidden && self.reveal_armed
+    }
+    fn arm_after_exit(&mut self) {
+        if self.hidden
+            && self
+                .hidden_at
+                .is_some_and(|at| at.elapsed() >= REVEAL_ARM_DELAY)
+        {
+            self.reveal_armed = true;
+        }
+    }
     fn reveal(&mut self, window: &NSWindow) {
-        if self.hidden {
+        if self.can_reveal() {
             self.hidden = false;
+            self.hidden_at = None;
+            self.reveal_armed = true;
             self.revealed_at = Some(Instant::now());
             if let Some(dock) = self.dock {
                 window.setFrame_display_animate(dock.shown.into(), true, true);
             }
         }
     }
-    fn hide(&mut self, window: &NSWindow) {
+    fn hide(&mut self, window: &NSWindow) -> bool {
         if !self.hidden
             && let Some(dock) = self.dock
         {
             self.hidden = true;
+            self.hidden_at = Some(Instant::now());
+            self.reveal_armed = false;
             self.revealed_at = None;
+            // Go directly from the AppKit release frame to the tucked frame.
             window.setFrame_display_animate(dock.hidden().into(), true, true);
+            return true;
         }
+        false
     }
+}
+fn arm_tab_after_animation(tuck: Rc<RefCell<EdgeTuck>>, window: Retained<NSWindow>) {
+    slint::Timer::single_shot(REVEAL_ARM_DELAY, move || {
+        if tuck.borrow().hidden && !point_in(window.frame(), NSEvent::mouseLocation()) {
+            tuck.borrow_mut().reveal_armed = true;
+        }
+    });
 }
 fn point_in(frame: NSRect, point: NSPoint) -> bool {
     point.x >= frame.origin.x
@@ -483,17 +512,33 @@ fn dock_for_window(
         old_side.and_then(|side| aligned_dock(side, actual, visible, &others))
     }
 }
-fn settle_dock(window: &NSWindow, tuck: &RefCell<EdgeTuck>, intended: Option<Geometry>) {
+// A deliberate release may hide immediately; a resize may only keep/release
+// an existing dock. Text entry is never interrupted by an automatic hide.
+fn should_tuck_on_release(deliberate: bool, naming_open: bool) -> bool {
+    deliberate && !naming_open
+}
+fn settle_dock(
+    window: &NSWindow,
+    tuck: &RefCell<EdgeTuck>,
+    intended: Option<Geometry>,
+    naming_open: bool,
+) -> bool {
     let mut tuck = tuck.borrow_mut();
     if !tuck.enabled {
-        return;
+        return false;
     }
     tuck.hidden = false;
+    tuck.hidden_at = None;
+    tuck.reveal_armed = true;
     tuck.revealed_at = None;
     tuck.dock = dock_for_window(window, intended, tuck.dock.map(|dock| dock.side));
     if let Some(dock) = tuck.dock {
+        if should_tuck_on_release(intended.is_some(), naming_open) {
+            return tuck.hide(window);
+        }
         window.setFrame_display_animate(dock.shown.into(), true, true);
     }
+    false
 }
 
 fn frame_difference(a: NSRect, b: NSRect) -> f64 {
@@ -568,6 +613,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         dock: None,
         hidden: false,
         revealed_at: None,
+        hidden_at: None,
+        reveal_armed: true,
     }));
     let original_level = window.level();
     let original_behavior = window.collectionBehavior();
@@ -625,6 +672,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         reset_tuck.borrow_mut().dock = None;
         reset_tuck.borrow_mut().hidden = false;
         reset_tuck.borrow_mut().revealed_at = None;
+        reset_tuck.borrow_mut().hidden_at = None;
+        reset_tuck.borrow_mut().reveal_armed = true;
         reset_window.setFrame_display(frame.into(), true);
         reset_settings
             .borrow_mut()
@@ -644,6 +693,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             }
             state.hidden = false;
             state.revealed_at = None;
+            state.hidden_at = None;
+            state.reveal_armed = true;
             state.dock = None;
         }
         state.enabled = enabled;
@@ -698,7 +749,9 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                 {
                     return;
                 }
-                state.borrow_mut().hide(&window);
+                if state.borrow_mut().hide(&window) {
+                    arm_tab_after_animation(state.clone(), window.clone());
+                }
             },
         );
     });
@@ -710,6 +763,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     let finish_window = window.clone();
     let finish_tuck = tuck.clone();
     let finish_interacting = interacting.clone();
+    let finish_weak = app.as_weak();
     let finish_move: Rc<dyn Fn()> = Rc::new(move || {
         if !finish_moving.replace(false) {
             return;
@@ -722,8 +776,14 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             .map(|drag| drag.intended(NSEvent::mouseLocation()));
         // performWindowDragWithEvent may return before AppKit applies the final
         // mouse-up position. Settle on the next event-loop turn, not at mouse-down.
+        let weak = finish_weak.clone();
         slint::Timer::single_shot(Duration::from_millis(60), move || {
-            settle_dock(&window, &state, intended);
+            let naming_open = weak
+                .upgrade()
+                .is_some_and(|app| app.get_playlist_entry_open());
+            if settle_dock(&window, &state, intended, naming_open) {
+                arm_tab_after_animation(state.clone(), window.clone());
+            }
             interacting.set(false);
         });
     });
@@ -755,6 +815,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                 observed_tuck.borrow_mut().dock = None;
                 observed_tuck.borrow_mut().hidden = false;
                 observed_tuck.borrow_mut().revealed_at = None;
+                observed_tuck.borrow_mut().hidden_at = None;
+                observed_tuck.borrow_mut().reveal_armed = true;
                 observed_window.setFrame_display(frame.into(), true);
                 previous_screens = current_screens;
             }
@@ -834,7 +896,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             } else if event_type == NSEventType::LeftMouseUp {
                 if drag.take().is_some() {
                     resize_interacting.set(false);
-                    settle_dock(&resize_window, &resize_tuck, None);
+                    settle_dock(&resize_window, &resize_tuck, None, false);
                     return std::ptr::null_mut();
                 }
                 resize_finish_move();
@@ -843,13 +905,14 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             if event.windowNumber() != resize_window.windowNumber() {
                 return event_ptr.as_ptr();
             }
-            if event_type == NSEventType::MouseEntered
-                || (event_type == NSEventType::MouseMoved && resize_tuck.borrow().hidden)
+            if (event_type == NSEventType::MouseEntered || event_type == NSEventType::MouseMoved)
+                && resize_tuck.borrow().can_reveal()
             {
                 resize_hide_timer.stop();
                 resize_pending.set(false);
                 resize_tuck.borrow_mut().reveal(&resize_window);
             } else if event_type == NSEventType::MouseExited {
+                resize_tuck.borrow_mut().arm_after_exit();
                 if was_edge.replace(false) {
                     NSCursor::arrowCursor().set();
                 }
@@ -883,6 +946,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                 if was_hidden_click {
                     resize_hide_timer.stop();
                     resize_pending.set(false);
+                    resize_tuck.borrow_mut().reveal_armed = true;
                     resize_tuck.borrow_mut().reveal(&resize_window);
                     if let Some(dock) = resize_tuck.borrow().dock {
                         resize_window.setFrame_display(dock.shown.into(), true);
@@ -1075,7 +1139,9 @@ mod tests {
                 enabled: true,
                 dock: Some(bottom),
                 hidden: true,
-                revealed_at: None
+                revealed_at: None,
+                hidden_at: None,
+                reveal_armed: true
             }
             .shown_or(bottom.hidden()),
             bottom.shown
@@ -1110,6 +1176,26 @@ mod tests {
                 ..actual
             }
         );
+    }
+
+    #[test]
+    fn deliberate_drop_hides_immediately_but_passive_reveal_waits_for_reentry() {
+        assert!(should_tuck_on_release(true, false));
+        assert!(!should_tuck_on_release(true, true));
+        assert!(!should_tuck_on_release(false, false));
+        let mut state = EdgeTuck {
+            enabled: true,
+            dock: None,
+            hidden: true,
+            revealed_at: None,
+            hidden_at: Some(Instant::now()),
+            reveal_armed: false,
+        };
+        assert!(!state.can_reveal());
+        state.arm_after_exit();
+        assert!(!state.can_reveal()); // Exit during the slide cannot undo it.
+        state.reveal_armed = true;
+        assert!(state.can_reveal());
     }
 
     #[test]
