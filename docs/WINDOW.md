@@ -27,11 +27,14 @@ If a desktop is smaller than the minimum size, the minimum is retained and the
 top edge stays reachable. Reset requests 420×640 at the current top-left, clamped
 to the usable desktop; it leaves pinning and unrelated settings untouched.
 
-When Edge Tuck is enabled, drag and release the device within 96 AppKit points
-of an **outer** left/right edge of its current display. It snaps to that edge;
-shared boundaries with another monitor are excluded so the body cannot spill
-onto that monitor. When the window is no longer key and the pointer has left,
-it animates offscreen, leaving a 36-point sliver. Hover over that sliver to
+When Edge Tuck is enabled, drag deliberately **through** an outer left, right
+or bottom edge: the pointer gesture must carry about one-third of the window
+past the edge before release. AppKit may visibly constrain the moving frame,
+but the gesture still counts. Merely parking it flush or a few pixels away does
+not snap. Shared boundaries with another monitor are excluded so the hidden
+body cannot spill onto that monitor. When the window is no longer key and the
+pointer has left, it animates offscreen, leaving a 36-point sliver on that edge.
+Hover over the sliver to
 reveal without activation; click to focus. Hiding waits 450 ms and never runs
 while the window is key, a drag/resize is active, or playlist naming is open.
 Drag the revealed device away to undock. Turning Edge Tuck Off or resetting the
@@ -76,9 +79,11 @@ both copies do not compete for playback metadata.
 ## Native manual checklist
 
 - [ ] Fresh preferences: window is 420×640; pinning and Edge Tuck are Off.
-- [ ] Turn Edge Tuck On, drag to each outer screen edge, click another app and
-      confirm the 36-point sliver remains. Hover to reveal without focus; move
-      away to hide after a short delay. Click the tab to focus. Repeat while
+- [ ] Turn Edge Tuck On; park a few pixels from each edge and verify no snap.
+      Then drag roughly one-third of the window past each outer left, right and
+      bottom edge, click another app and confirm the 36-point sliver remains.
+      Hover to reveal without focus; move away to hide after a short delay.
+      Click the tab to focus. Repeat while
       pinned; drag away, resize, reset and toggle Off. Repeat with playlist naming
       open, with a second monitor, and after disconnecting that monitor.
 - [ ] Pin On and switch repeatedly between workspaces on the same display.

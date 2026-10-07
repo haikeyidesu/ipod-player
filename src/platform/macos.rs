@@ -214,6 +214,21 @@ struct Drag {
     max_width: f64,
 }
 
+#[derive(Clone, Copy)]
+struct MoveDrag {
+    start_mouse: NSPoint,
+    start_frame: Geometry,
+}
+impl MoveDrag {
+    fn intended(self, end: NSPoint) -> Geometry {
+        Geometry {
+            x: self.start_frame.x + end.x - self.start_mouse.x,
+            y: self.start_frame.y + end.y - self.start_mouse.y,
+            ..self.start_frame
+        }
+    }
+}
+
 // Freeze this cap at mouse-down. Never switch screens/anchors mid-gesture.
 fn screen_width_limit(frame: NSRect, edges: Edges, visible: NSRect) -> f64 {
     let available_width = if edges.left {
@@ -276,6 +291,7 @@ fn resized_frame(drag: Drag, mouse: NSPoint) -> NSRect {
 enum Side {
     Left,
     Right,
+    Bottom,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -284,9 +300,9 @@ struct Dock {
     shown: Geometry,
     screen: Geometry,
 }
-// Native window dragging can leave a margin between the pointer and the frame.
-// A forgiving threshold makes edge placement deliberate without requiring pixel precision.
-const DOCK_THRESHOLD: f64 = 96.0;
+// Dock only when the *unconstrained* native drag would put a third of the
+// window beyond the edge. A small gap or a flush placement never qualifies.
+const DOCK_FRACTION: f64 = 1.0 / 3.0;
 const TUCK_TAB: f64 = 36.0;
 
 impl Dock {
@@ -295,75 +311,121 @@ impl Dock {
             x: match self.side {
                 Side::Left => self.screen.x + TUCK_TAB - self.shown.width,
                 Side::Right => self.screen.x + self.screen.width - TUCK_TAB,
+                Side::Bottom => self.shown.x,
+            },
+            y: if self.side == Side::Bottom {
+                self.screen.y + TUCK_TAB - self.shown.height
+            } else {
+                self.shown.y
             },
             ..self.shown
         }
     }
 }
 
-// A screen shared with another display is not a safe tuck edge: the hidden
-// body would merely move onto that display instead of disappearing.
-#[cfg(test)]
-fn dock_candidate(frame: Geometry, screen: Geometry, other_screens: &[Geometry]) -> Option<Dock> {
-    dock_candidate_at(frame, screen, other_screens, None)
+// A shared display boundary is not a safe tuck edge: the hidden body would
+// simply move onto that monitor. Check the entire offscreen corridor.
+fn overlaps(a: Geometry, b: Geometry) -> bool {
+    a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
 }
-fn dock_candidate_at(
+fn dock_position(
+    side: Side,
     frame: Geometry,
     screen: Geometry,
-    other_screens: &[Geometry],
-    pointer_x: Option<f64>,
+    others: &[Geometry],
 ) -> Option<Dock> {
-    if frame.width > screen.width || frame.height > screen.height || screen.width <= TUCK_TAB {
-        return None;
-    }
-    let edge = [
-        (
-            Side::Left,
-            (frame.x - screen.x)
-                .abs()
-                .min(pointer_x.map_or(f64::INFINITY, |x| (x - screen.x).abs())),
-        ),
-        (
-            Side::Right,
-            (frame.x + frame.width - screen.x - screen.width)
-                .abs()
-                .min(pointer_x.map_or(f64::INFINITY, |x| (x - screen.x - screen.width).abs())),
-        ),
-    ]
-    .into_iter()
-    .min_by(|a, b| a.1.total_cmp(&b.1))?;
-    if edge.1 > DOCK_THRESHOLD {
+    if frame.width > screen.width
+        || frame.height > screen.height
+        || screen.width <= TUCK_TAB
+        || screen.height <= TUCK_TAB
+    {
         return None;
     }
     let shown = Geometry {
-        x: if edge.0 == Side::Left {
+        x: if side == Side::Left {
             screen.x
-        } else {
+        } else if side == Side::Right {
             screen.x + screen.width - frame.width
+        } else {
+            frame
+                .x
+                .clamp(screen.x, screen.x + screen.width - frame.width)
         },
-        y: frame
-            .y
-            .clamp(screen.y, screen.y + screen.height - frame.height),
+        y: if side == Side::Bottom {
+            screen.y
+        } else {
+            frame
+                .y
+                .clamp(screen.y, screen.y + screen.height - frame.height)
+        },
         ..frame
     };
     let dock = Dock {
-        side: edge.0,
+        side,
         shown,
         screen,
     };
-    let tucked = dock.hidden();
-    let corridor = match edge.0 {
-        Side::Left => (tucked.x, screen.x),
-        Side::Right => (screen.x + screen.width, tucked.x + frame.width),
+    let hidden = dock.hidden();
+    let corridor = match side {
+        Side::Left => Geometry {
+            x: hidden.x,
+            width: screen.x - hidden.x,
+            ..shown
+        },
+        Side::Right => Geometry {
+            x: screen.x + screen.width,
+            width: hidden.x + hidden.width - screen.x - screen.width,
+            ..shown
+        },
+        Side::Bottom => Geometry {
+            y: hidden.y,
+            height: screen.y - hidden.y,
+            ..shown
+        },
     };
-    if other_screens.iter().any(|other| {
-        let vertical = other.y < shown.y + shown.height && other.y + other.height > shown.y;
-        vertical && other.x < corridor.1 && other.x + other.width > corridor.0
-    }) {
-        None
-    } else {
-        Some(dock)
-    }
+    (!others.iter().any(|other| overlaps(corridor, *other))).then_some(dock)
+}
+
+// AppKit may clamp its *actual* frame onscreen. The start-frame + global mouse
+// delta still records the user's deliberate overshoot without moving the view.
+fn dock_candidate(
+    intended: Geometry,
+    actual: Geometry,
+    screen: Geometry,
+    others: &[Geometry],
+) -> Option<Dock> {
+    let edges = [
+        (Side::Left, (screen.x - intended.x) / intended.width),
+        (
+            Side::Right,
+            (intended.x + intended.width - screen.x - screen.width) / intended.width,
+        ),
+        (Side::Bottom, (screen.y - intended.y) / intended.height),
+    ];
+    let mut edges = edges
+        .into_iter()
+        .filter(|(_, depth)| *depth >= DOCK_FRACTION)
+        .collect::<Vec<_>>();
+    edges.sort_by(|a, b| b.1.total_cmp(&a.1));
+    edges
+        .into_iter()
+        .find_map(|(side, _)| dock_position(side, actual, screen, others))
+}
+
+fn aligned_dock(
+    side: Side,
+    frame: Geometry,
+    screen: Geometry,
+    others: &[Geometry],
+) -> Option<Dock> {
+    let aligned = match side {
+        Side::Left => (frame.x - screen.x).abs() < 3.0,
+        Side::Right => (frame.x + frame.width - screen.x - screen.width).abs() < 3.0,
+        Side::Bottom => (frame.y - screen.y).abs() < 3.0,
+    };
+    aligned
+        .then(|| dock_position(side, frame, screen, others))
+        .flatten()
 }
 
 struct EdgeTuck {
@@ -402,7 +464,11 @@ fn point_in(frame: NSRect, point: NSPoint) -> bool {
         && point.y < frame.origin.y + frame.size.height
 }
 
-fn dock_for_window(window: &NSWindow) -> Option<Dock> {
+fn dock_for_window(
+    window: &NSWindow,
+    intended: Option<Geometry>,
+    old_side: Option<Side>,
+) -> Option<Dock> {
     let active = window.screen()?;
     let visible = Geometry::from(active.visibleFrame());
     let others = NSScreen::screens(MainThreadMarker::new()?)
@@ -410,21 +476,21 @@ fn dock_for_window(window: &NSWindow) -> Option<Dock> {
         .filter(|screen| screen.frame() != active.frame())
         .map(|screen| Geometry::from(screen.frame()))
         .collect::<Vec<_>>();
-    dock_candidate_at(
-        window.frame().into(),
-        visible,
-        &others,
-        Some(NSEvent::mouseLocation().x),
-    )
+    let actual = window.frame().into();
+    if let Some(intended) = intended {
+        dock_candidate(intended, actual, visible, &others)
+    } else {
+        old_side.and_then(|side| aligned_dock(side, actual, visible, &others))
+    }
 }
-fn settle_dock(window: &NSWindow, tuck: &RefCell<EdgeTuck>) {
+fn settle_dock(window: &NSWindow, tuck: &RefCell<EdgeTuck>, intended: Option<Geometry>) {
     let mut tuck = tuck.borrow_mut();
     if !tuck.enabled {
         return;
     }
     tuck.hidden = false;
     tuck.revealed_at = None;
-    tuck.dock = dock_for_window(window);
+    tuck.dock = dock_for_window(window, intended, tuck.dock.map(|dock| dock.side));
     if let Some(dock) = tuck.dock {
         window.setFrame_display_animate(dock.shown.into(), true, true);
     }
@@ -588,7 +654,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             app.set_window_tuck_enabled(enabled);
             app.invoke_show_status(
                 if enabled {
-                    "Edge Tuck On — drag to edge"
+                    "Edge Tuck On — drag past edge"
                 } else {
                     "Edge Tuck Off"
                 }
@@ -638,6 +704,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     });
 
     let moving = Rc::new(Cell::new(false));
+    let move_gesture = Rc::new(Cell::new(None::<MoveDrag>));
+    let finish_gesture = move_gesture.clone();
     let finish_moving = moving.clone();
     let finish_window = window.clone();
     let finish_tuck = tuck.clone();
@@ -649,10 +717,13 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         let window = finish_window.clone();
         let state = finish_tuck.clone();
         let interacting = finish_interacting.clone();
+        let intended = finish_gesture
+            .take()
+            .map(|drag| drag.intended(NSEvent::mouseLocation()));
         // performWindowDragWithEvent may return before AppKit applies the final
         // mouse-up position. Settle on the next event-loop turn, not at mouse-down.
         slint::Timer::single_shot(Duration::from_millis(60), move || {
-            settle_dock(&window, &state);
+            settle_dock(&window, &state, intended);
             interacting.set(false);
         });
     });
@@ -720,6 +791,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     let debug_resize = std::env::var_os("IPOD_RESIZE_DEBUG").is_some();
     let was_edge = Cell::new(false);
     let resize_moving = moving.clone();
+    let resize_move_gesture = move_gesture.clone();
     let resize_finish_move = finish_move.clone();
     let resize_window = window.clone();
     let resize_tuck = tuck.clone();
@@ -762,7 +834,7 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
             } else if event_type == NSEventType::LeftMouseUp {
                 if drag.take().is_some() {
                     resize_interacting.set(false);
-                    settle_dock(&resize_window, &resize_tuck);
+                    settle_dock(&resize_window, &resize_tuck, None);
                     return std::ptr::null_mut();
                 }
                 resize_finish_move();
@@ -860,6 +932,10 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                     resize_interacting.set(true);
                     resize_hide_timer.stop();
                     resize_pending.set(false);
+                    resize_move_gesture.set(Some(MoveDrag {
+                        start_mouse: NSEvent::mouseLocation(),
+                        start_frame: resize_window.frame().into(),
+                    }));
                     resize_moving.set(true);
                     resize_window.performWindowDragWithEvent(event);
                     if NSEvent::pressedMouseButtons() & 1 == 0 {
@@ -915,98 +991,205 @@ mod tests {
     }
 
     #[test]
-    fn edge_tuck_preserves_shown_geometry_and_avoids_adjacent_displays() {
+    fn deliberate_outer_edge_tuck_preserves_the_orthogonal_position() {
         let screen = Geometry {
             x: 0.0,
             y: 24.0,
             width: 1440.0,
             height: 876.0,
         };
-        let frame = Geometry {
-            x: 18.0,
+        let actual = Geometry {
+            x: 7.0,
             y: 110.0,
             width: 420.0,
             height: 640.0,
         };
-        let left = dock_candidate(frame, screen, &[]).unwrap();
+        // Even a flush or nearly flush window does not dock without a gesture.
+        for x in [5.0, 0.0, -actual.width * DOCK_FRACTION + 0.1] {
+            assert!(dock_candidate(Geometry { x, ..actual }, actual, screen, &[]).is_none());
+        }
+        let left = dock_candidate(
+            Geometry {
+                x: -141.0,
+                ..actual
+            },
+            actual,
+            screen,
+            &[],
+        )
+        .unwrap();
         assert_eq!(left.side, Side::Left);
-        assert_eq!(left.shown.x, 0.0);
-        assert_eq!(left.shown.y, frame.y);
+        assert_eq!((left.shown.x, left.shown.y), (0.0, 110.0));
         assert_eq!(left.hidden().x + left.hidden().width, TUCK_TAB);
-        assert_eq!(left.hidden().y, frame.y);
-        assert_eq!(
-            (left.hidden().width, left.hidden().height),
-            (frame.width, frame.height)
-        );
-        let right_frame = Geometry {
-            x: 1440.0 - 420.0 - 12.0,
-            ..frame
+        assert_eq!((left.hidden().width, left.hidden().height), (420.0, 640.0));
+        let right_actual = Geometry {
+            x: 1017.0,
+            ..actual
         };
-        let right = dock_candidate(right_frame, screen, &[]).unwrap();
+        let right = dock_candidate(
+            Geometry {
+                x: 1161.0,
+                ..right_actual
+            },
+            right_actual,
+            screen,
+            &[],
+        )
+        .unwrap();
         assert_eq!(right.side, Side::Right);
-        assert_eq!(right.shown.x, 1020.0);
+        assert_eq!((right.shown.x, right.shown.y), (1020.0, 110.0));
         assert_eq!(right.hidden().x, 1440.0 - TUCK_TAB);
-        assert_eq!(
-            EdgeTuck {
-                enabled: true,
-                dock: Some(right),
-                hidden: true,
-                revealed_at: None
-            }
-            .shown_or(right.hidden()),
-            right.shown
-        );
+        let bottom_actual = Geometry {
+            x: 307.0,
+            y: 26.0,
+            ..actual
+        };
         assert!(
             dock_candidate(
                 Geometry {
-                    x: DOCK_THRESHOLD + 1.0,
-                    ..frame
+                    y: -188.0,
+                    ..bottom_actual
+                },
+                bottom_actual,
+                screen,
+                &[]
+            )
+            .is_none()
+        );
+        let bottom = dock_candidate(
+            Geometry {
+                y: -190.0,
+                ..bottom_actual
+            },
+            bottom_actual,
+            screen,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(bottom.side, Side::Bottom);
+        assert_eq!((bottom.shown.x, bottom.shown.y), (307.0, 24.0));
+        assert_eq!(bottom.hidden().y + bottom.hidden().height, 24.0 + TUCK_TAB);
+        assert_eq!(bottom.hidden().x, bottom.shown.x);
+        assert_eq!(
+            EdgeTuck {
+                enabled: true,
+                dock: Some(bottom),
+                hidden: true,
+                revealed_at: None
+            }
+            .shown_or(bottom.hidden()),
+            bottom.shown
+        );
+        assert_eq!(
+            aligned_dock(Side::Bottom, bottom.shown, screen, &[])
+                .unwrap()
+                .shown,
+            bottom.shown
+        );
+        assert!(
+            aligned_dock(
+                Side::Bottom,
+                Geometry {
+                    y: 29.0,
+                    ..bottom.shown
                 },
                 screen,
                 &[]
             )
             .is_none()
         );
-        let inboard = Geometry { x: 140.0, ..frame };
+        let drag = MoveDrag {
+            start_mouse: NSPoint { x: 400.0, y: 600.0 },
+            start_frame: actual,
+        };
         assert_eq!(
-            dock_candidate_at(inboard, screen, &[], Some(0.0))
-                .unwrap()
-                .side,
-            Side::Left
+            drag.intended(NSPoint { x: 260.0, y: 386.0 }),
+            Geometry {
+                x: -133.0,
+                y: -104.0,
+                ..actual
+            }
         );
-        assert!(dock_candidate_at(inboard, screen, &[], Some(120.0)).is_none());
-        let neighbour = Geometry {
+    }
+
+    #[test]
+    fn tuck_does_not_slide_onto_an_adjacent_display() {
+        let screen = Geometry {
+            x: 0.0,
+            y: 24.0,
+            width: 1440.0,
+            height: 876.0,
+        };
+        let actual = Geometry {
+            x: 10.0,
+            y: 110.0,
+            width: 420.0,
+            height: 640.0,
+        };
+        let intended = Geometry {
+            x: -141.0,
+            ..actual
+        };
+        let left_neighbour = Geometry {
             x: -1920.0,
             y: 0.0,
             width: 1920.0,
             height: 1080.0,
         };
-        assert!(dock_candidate(frame, screen, &[neighbour]).is_none());
-        assert!(dock_candidate(right_frame, screen, &[neighbour]).is_some());
+        assert!(dock_candidate(intended, actual, screen, &[left_neighbour]).is_none());
         let right_neighbour = Geometry {
             x: 1440.0,
-            y: 0.0,
-            width: 1920.0,
-            height: 1080.0,
+            ..left_neighbour
         };
-        assert!(dock_candidate(right_frame, screen, &[right_neighbour]).is_none());
         assert!(
             dock_candidate(
-                frame,
+                Geometry {
+                    x: 1161.0,
+                    ..actual
+                },
+                actual,
+                screen,
+                &[right_neighbour]
+            )
+            .is_none()
+        );
+        let below = Geometry {
+            x: 0.0,
+            y: -1080.0,
+            width: 1440.0,
+            height: 1104.0,
+        };
+        assert!(
+            dock_candidate(
+                Geometry {
+                    y: -190.0,
+                    ..actual
+                },
+                actual,
+                screen,
+                &[below]
+            )
+            .is_none()
+        );
+        assert!(
+            dock_candidate(
+                intended,
+                actual,
                 screen,
                 &[Geometry {
                     y: 901.0,
-                    ..neighbour
+                    ..left_neighbour
                 }]
             )
             .is_some()
         );
         assert!(
             dock_candidate(
+                intended,
                 Geometry {
                     width: 630.0,
                     height: 960.0,
-                    ..frame
+                    ..actual
                 },
                 screen,
                 &[]
