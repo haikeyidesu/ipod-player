@@ -22,6 +22,9 @@ Engineering overview, audit findings and verification results:
 - Frameless Aqua/glass iPod window, proportional scaling and native macOS resizing.
 - Dockless native window with persistent pinning/geometry, Reset Window Size and a faint LCD texture;
   [window preferences and verification](docs/WINDOW.md).
+- Opt-in macOS Edge Tuck: a partial edge overshoot docks the window open; a deeper
+  drop tucks it to a slim handle. Click to reveal, slide along the edge, or pull
+  inward to undock; see [edge gestures and manual checks](docs/WINDOW.md).
 - Click-wheel, keyboard and mouse navigation; classic Now Playing artwork/progress.
 - Browse MPD artists, albums, songs, saved playlists and indexed folders.
 - Collection Play/Shuffle replaces the queue; Play Next/Add to Queue preserve it.
