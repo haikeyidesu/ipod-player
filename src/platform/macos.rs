@@ -284,7 +284,9 @@ struct Dock {
     shown: Geometry,
     screen: Geometry,
 }
-const DOCK_THRESHOLD: f64 = 24.0;
+// Native window dragging can leave a margin between the pointer and the frame.
+// A forgiving threshold makes edge placement deliberate without requiring pixel precision.
+const DOCK_THRESHOLD: f64 = 96.0;
 const TUCK_TAB: f64 = 36.0;
 
 impl Dock {
@@ -301,15 +303,31 @@ impl Dock {
 
 // A screen shared with another display is not a safe tuck edge: the hidden
 // body would merely move onto that display instead of disappearing.
+#[cfg(test)]
 fn dock_candidate(frame: Geometry, screen: Geometry, other_screens: &[Geometry]) -> Option<Dock> {
+    dock_candidate_at(frame, screen, other_screens, None)
+}
+fn dock_candidate_at(
+    frame: Geometry,
+    screen: Geometry,
+    other_screens: &[Geometry],
+    pointer_x: Option<f64>,
+) -> Option<Dock> {
     if frame.width > screen.width || frame.height > screen.height || screen.width <= TUCK_TAB {
         return None;
     }
     let edge = [
-        (Side::Left, (frame.x - screen.x).abs()),
+        (
+            Side::Left,
+            (frame.x - screen.x)
+                .abs()
+                .min(pointer_x.map_or(f64::INFINITY, |x| (x - screen.x).abs())),
+        ),
         (
             Side::Right,
-            (frame.x + frame.width - screen.x - screen.width).abs(),
+            (frame.x + frame.width - screen.x - screen.width)
+                .abs()
+                .min(pointer_x.map_or(f64::INFINITY, |x| (x - screen.x - screen.width).abs())),
         ),
     ]
     .into_iter()
@@ -392,7 +410,12 @@ fn dock_for_window(window: &NSWindow) -> Option<Dock> {
         .filter(|screen| screen.frame() != active.frame())
         .map(|screen| Geometry::from(screen.frame()))
         .collect::<Vec<_>>();
-    dock_candidate(window.frame().into(), visible, &others)
+    dock_candidate_at(
+        window.frame().into(),
+        visible,
+        &others,
+        Some(NSEvent::mouseLocation().x),
+    )
 }
 fn settle_dock(window: &NSWindow, tuck: &RefCell<EdgeTuck>) {
     let mut tuck = tuck.borrow_mut();
@@ -614,7 +637,28 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         );
     });
 
+    let moving = Rc::new(Cell::new(false));
+    let finish_moving = moving.clone();
+    let finish_window = window.clone();
+    let finish_tuck = tuck.clone();
+    let finish_interacting = interacting.clone();
+    let finish_move: Rc<dyn Fn()> = Rc::new(move || {
+        if !finish_moving.replace(false) {
+            return;
+        }
+        let window = finish_window.clone();
+        let state = finish_tuck.clone();
+        let interacting = finish_interacting.clone();
+        // performWindowDragWithEvent may return before AppKit applies the final
+        // mouse-up position. Settle on the next event-loop turn, not at mouse-down.
+        slint::Timer::single_shot(Duration::from_millis(60), move || {
+            settle_dock(&window, &state);
+            interacting.set(false);
+        });
+    });
     let timer = slint::Timer::default();
+    let observed_moving = moving.clone();
+    let observed_finish_move = finish_move.clone();
     let observed_window = window.clone();
     let observed_settings = settings.clone();
     let observed_tuck = tuck.clone();
@@ -626,6 +670,11 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
         slint::TimerMode::Repeated,
         Duration::from_millis(250),
         move || {
+            // A native AppKit drag can swallow its mouse-up before the local
+            // monitor sees it. Only observe button state while a drag is live.
+            if observed_moving.get() && NSEvent::pressedMouseButtons() & 1 == 0 {
+                observed_finish_move();
+            }
             let current_screens = screens();
             if previous_screens != current_screens {
                 let frame = observed_tuck
@@ -670,6 +719,8 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
     let reported_frame_adjustment = Cell::new(false);
     let debug_resize = std::env::var_os("IPOD_RESIZE_DEBUG").is_some();
     let was_edge = Cell::new(false);
+    let resize_moving = moving.clone();
+    let resize_finish_move = finish_move.clone();
     let resize_window = window.clone();
     let resize_tuck = tuck.clone();
     let resize_interacting = interacting.clone();
@@ -708,10 +759,13 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                     }
                     return std::ptr::null_mut();
                 }
-            } else if event_type == NSEventType::LeftMouseUp && drag.take().is_some() {
-                resize_interacting.set(false);
-                settle_dock(&resize_window, &resize_tuck);
-                return std::ptr::null_mut();
+            } else if event_type == NSEventType::LeftMouseUp {
+                if drag.take().is_some() {
+                    resize_interacting.set(false);
+                    settle_dock(&resize_window, &resize_tuck);
+                    return std::ptr::null_mut();
+                }
+                resize_finish_move();
             }
 
             if event.windowNumber() != resize_window.windowNumber() {
@@ -806,9 +860,11 @@ pub fn install(app: &AppWindow, settings: Rc<RefCell<Store>>) -> Result<ResizeMo
                     resize_interacting.set(true);
                     resize_hide_timer.stop();
                     resize_pending.set(false);
+                    resize_moving.set(true);
                     resize_window.performWindowDragWithEvent(event);
-                    resize_interacting.set(false);
-                    settle_dock(&resize_window, &resize_tuck);
+                    if NSEvent::pressedMouseButtons() & 1 == 0 {
+                        resize_finish_move();
+                    }
                     return std::ptr::null_mut();
                 }
             }
@@ -900,7 +956,25 @@ mod tests {
             .shown_or(right.hidden()),
             right.shown
         );
-        assert!(dock_candidate(Geometry { x: 25.0, ..frame }, screen, &[]).is_none());
+        assert!(
+            dock_candidate(
+                Geometry {
+                    x: DOCK_THRESHOLD + 1.0,
+                    ..frame
+                },
+                screen,
+                &[]
+            )
+            .is_none()
+        );
+        let inboard = Geometry { x: 140.0, ..frame };
+        assert_eq!(
+            dock_candidate_at(inboard, screen, &[], Some(0.0))
+                .unwrap()
+                .side,
+            Side::Left
+        );
+        assert!(dock_candidate_at(inboard, screen, &[], Some(120.0)).is_none());
         let neighbour = Geometry {
             x: -1920.0,
             y: 0.0,

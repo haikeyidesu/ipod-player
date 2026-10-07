@@ -27,7 +27,7 @@ If a desktop is smaller than the minimum size, the minimum is retained and the
 top edge stays reachable. Reset requests 420×640 at the current top-left, clamped
 to the usable desktop; it leaves pinning and unrelated settings untouched.
 
-When Edge Tuck is enabled, drag and release the device within 24 AppKit points
+When Edge Tuck is enabled, drag and release the device within 96 AppKit points
 of an **outer** left/right edge of its current display. It snaps to that edge;
 shared boundaries with another monitor are excluded so the body cannot spill
 onto that monitor. When the window is no longer key and the pointer has left,
